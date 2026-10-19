@@ -11,7 +11,7 @@ export interface TransparencyEntry {
   location?: {
     latitude: number;
     longitude: number;
-    precision: number;
+    precision?: number;
   };
   proof?: string;
 }
@@ -350,7 +350,7 @@ export class DonorTransparencyClient {
       }, '0');
 
       const geolocationCoverage = [
-        ...new Set(disbursements.map(e => e.location?.address || 'Unknown')),
+        ...new Set(disbursements.map(e => e.location ? `${e.location.latitude},${e.location.longitude}` : 'Unknown')),
       ];
 
       return {

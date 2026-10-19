@@ -1,4 +1,11 @@
+//! Beneficiary identity, recovery-code, and offline access restoration.
+//!
+//! Operational guarantees, expiry rules, reconciliation steps, and known
+//! abuse-resistance gaps (including the current deterministic recovery-code
+//! format) are documented in `docs/offline-flows.md`.
+
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64, BytesN};
+use crate::geo::{GeoPoint, GeofenceZone as StdGeofenceZone, GeoFormatter, GeoMigration};
 
 #[contract]
 pub struct BeneficiaryManager;
@@ -71,14 +78,9 @@ pub struct TemporaryCredential {
     pub is_active: bool,
 }
 
-#[derive(Clone)]
-pub struct GeofenceZone {
-    pub zone_name: String,
-    pub latitude: i64, // Scaled by 1e6 for precision
-    pub longitude: i64,
-    pub radius_meters: u32,
-    pub is_safe: bool,
-}
+/// Use standardized GeofenceZone from geo module
+/// Type alias for backward compatibility
+pub type GeofenceZone = StdGeofenceZone;
 
 #[derive(Clone)]
 pub struct SocialRecoveryRequest {
@@ -142,7 +144,11 @@ impl BeneficiaryManager {
         Self::generate_recovery_codes(&env, beneficiary_id);
     }
 
-    /// Generate recovery codes for offline access restoration
+    /// Generate recovery codes for offline access restoration.
+    ///
+    /// Three single-use codes are stored with 30/60/90-day expiry. The current
+    /// hash is deterministic from the beneficiary ID and index, so this is not
+    /// a production-grade secret; see `docs/offline-flows.md` (known gaps).
     fn generate_recovery_codes(env: &Env, beneficiary_id: String) {
         let recovery_key = Symbol::new(env, "recovery_codes");
         let mut recovery_codes: Map<String, Vec<RecoveryCode>> = env.storage().instance()
@@ -234,7 +240,11 @@ impl BeneficiaryManager {
         }
     }
 
-    /// Restore access using recovery code
+    /// Restore access using a recovery code.
+    ///
+    /// The code must be unused and unexpired; it is marked used before the
+    /// wallet address is changed. See `docs/offline-flows.md` for the current
+    /// client/contract format mismatch and the planned random-code migration.
     pub fn restore_access(
         env: Env,
         beneficiary_id: String,
@@ -249,32 +259,38 @@ impl BeneficiaryManager {
         let current_time = env.ledger().timestamp();
         
         if let Some(mut codes) = recovery_codes.get(beneficiary_id.clone()) {
-            for mut code in codes.iter() {
-                if code.code_hash == recovery_code 
-                    && !code.is_used 
-                    && current_time <= code.expires_at {
-                    
-                    // Mark code as used
-                    code.is_used = true;
-                    
+            for i in 0..codes.len() {
+                let code = codes.get(i).unwrap();
+                if code.code_hash == recovery_code
+                    && !code.is_used
+                    && current_time <= code.expires_at
+                {
+                    // Mark the code as used and persist the updated list so the
+                    // same code cannot be replayed.
+                    let mut used_code = code;
+                    used_code.is_used = true;
+                    codes.set(i, used_code);
+                    recovery_codes.set(beneficiary_id.clone(), codes);
+                    env.storage().instance().set(&recovery_key, &recovery_codes);
+
                     // Update beneficiary wallet address
                     let beneficiaries_key = Symbol::new(&env, "beneficiaries");
                     let mut beneficiaries: Map<String, BeneficiaryProfile> = env.storage().instance()
                         .get(&beneficiaries_key)
                         .unwrap_or(Map::new(&env));
-                    
+
                     if let Some(mut profile) = beneficiaries.get(beneficiary_id.clone()) {
                         profile.wallet_address = new_wallet;
                         profile.last_verified = current_time;
                         beneficiaries.set(beneficiary_id, profile);
                         env.storage().instance().set(&beneficiaries_key, &beneficiaries);
                     }
-                    
+
                     return true;
                 }
             }
         }
-        
+
         false
     }
 
@@ -715,11 +731,12 @@ impl BeneficiaryManager {
     }
 
     /// Check if identity is within safe geofence zone
+    /// Uses standardized GeoPoint for coordinates (f64 degrees)
     pub fn check_geofence(
         env: Env,
         id_hash: BytesN<32>,
-        current_latitude: i64,
-        current_longitude: i64,
+        current_latitude: f64,
+        current_longitude: f64,
     ) -> bool {
         let identities_key = Symbol::new(&env, "identities");
         let identities: Map<BytesN<32>, BeneficiaryIdentity> = env.storage().persistent()
@@ -731,33 +748,18 @@ impl BeneficiaryManager {
             None => return false,
         };
         
+        let current_point = GeoPoint::new(current_latitude, current_longitude).unwrap_or(GeoPoint::new(0.0, 0.0).unwrap());
+        
         // Check if within any safe zone
         for zone in identity.geofence_zones.iter() {
             if zone.is_safe {
-                let distance = Self::calculate_distance(
-                    zone.latitude,
-                    zone.longitude,
-                    current_latitude,
-                    current_longitude,
-                );
-                
-                if distance <= zone.radius_meters {
+                if zone.contains(&current_point) {
                     return true;
                 }
             }
         }
         
         false
-    }
-
-    /// Calculate distance between two points (simplified Haversine)
-    fn calculate_distance(lat1: i64, lon1: i64, lat2: i64, lon2: i64) -> u32 {
-        // Simplified distance calculation (in meters)
-        // In production, use proper Haversine formula
-        let dlat = (lat2 - lat1).abs();
-        let dlon = (lon2 - lon1).abs();
-        let distance = ((dlat * dlat + dlon * dlon) as f64).sqrt();
-        (distance / 10.0) as u32 // Rough approximation
     }
 
     /// Update trust score based on activity

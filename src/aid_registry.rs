@@ -16,6 +16,13 @@ pub const FUND_STATUS_ARCHIVED: &str = "archived";
 
 const SECONDS_PER_MONTH: u64 = 2_592_000; // 30 days
 
+/// Maximum number of entries accepted by `submit_batch_disbursement`.
+///
+/// Keeps a single invocation within Soroban CPU/memory and ledger-entry
+/// limits. Clients must split larger requests into several transactions; every
+/// batch is atomic, so a partial batch is never persisted.
+pub const MAX_BATCH_SIZE: u32 = 100;
+
 /// Maximum age of oracle data accepted at submission time (1 hour).
 pub const ORACLE_STALENESS_SECS: u64 = 3_600;
 
@@ -491,6 +498,23 @@ impl AidRegistry {
         }
     }
 
+    /// Return the canonical disbursement purpose taxonomy.
+    ///
+    /// Clients can use this list for dropdowns and reporting buckets. The
+    /// on-chain `purpose` string remains free text for auditability.
+    pub fn get_purpose_taxonomy(env: Env) -> Vec<String> {
+        let mut categories = Vec::new(&env);
+        for category in DISBURSEMENT_PURPOSE_CATEGORIES.iter() {
+            categories.push_back(String::from_str(&env, *category));
+        }
+        categories
+    }
+
+    /// Classify a free-text purpose into a canonical reporting category.
+    pub fn classify_disbursement_purpose(env: Env, purpose: String) -> String {
+        String::from_str(&env, categorize_purpose(&purpose))
+    }
+
     /// Deactivate expired funds
     pub fn cleanup_expired_funds(env: Env) {
         let fund_key = Symbol::new(&env, "fund");
@@ -858,7 +882,9 @@ impl AidRegistry {
     /// Submit multiple disbursements atomically in a single transaction.
     ///
     /// All entries must pass validation; if any entry fails the entire
-    /// transaction is reverted (Soroban panic semantics).
+    /// transaction is reverted (Soroban panic semantics). A batch may contain
+    /// at most [`MAX_BATCH_SIZE`] entries; larger workloads must be split into
+    /// multiple atomic batches by the caller.
     ///
     /// # Parameters
     /// - `requester`  – address that must be authorised to submit
@@ -884,6 +910,11 @@ impl AidRegistry {
         // ── Validate batch is non-empty ──────────────────────────────────────
         if entries.is_empty() {
             panic_with_error!(&env, "Batch must contain at least one entry");
+        }
+
+        // ── Enforce the maximum batch size ──────────────────────────────────
+        if entries.len() > MAX_BATCH_SIZE {
+            panic_with_error!(&env, "Batch exceeds maximum of 100 entries");
         }
 
         // ── Load fund ────────────────────────────────────────────────────────
@@ -915,10 +946,11 @@ impl AidRegistry {
 
         // ── Validate each entry and compute total ────────────────────────────
         let mut total = U256::from_u64(0);
-        for (_, amount, _) in entries.iter() {
+        for (_, amount, purpose) in entries.iter() {
             if amount == U256::from_u64(0) {
                 panic_with_error!(&env, "Amount must be greater than zero");
             }
+            validate_purpose(&env, &purpose);
             total = total + amount;
         }
 
@@ -992,6 +1024,9 @@ impl AidRegistry {
     ) -> bool {
         // Validate approvers list before loading fund
         require_non_empty_address_list(&env, &approvers);
+
+        // Validate the free-text purpose (non-empty, bounded length).
+        validate_purpose(&env, &purpose);
 
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
@@ -1525,7 +1560,10 @@ impl AidRegistry {
         approvers: Vec<Address>,
     ) {
         admin.require_auth();
-        
+
+        // Validate the free-text purpose (non-empty, bounded length).
+        validate_purpose(&env, &purpose);
+
         // Create unique key for this disbursement
         let disbursement_key = format!("disbursement_{}_{}", beneficiary_address, purpose);
         

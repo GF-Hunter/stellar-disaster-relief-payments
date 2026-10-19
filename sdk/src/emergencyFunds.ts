@@ -22,6 +22,8 @@ import {
   ValidationError,
   UnauthorizedError,
 } from './errors';
+import { withRetry } from './retry';
+import { validateAddress, validateAddressList } from './validation';
 
 export interface EmergencyFund {
   id: string;
@@ -133,7 +135,7 @@ export class EmergencyFundsClient {
     contractId: string,
     signingKey: Keypair,
     server: any,
-    networkPassphrase: string = Networks.TESTNET_NETWORK_PASSPHRASE
+    networkPassphrase: string = Networks.TESTNET
   ) {
     this.contractId = contractId;
     this.signingKey = signingKey;
@@ -162,7 +164,7 @@ export class EmergencyFundsClient {
     validateAddressList(signersArray, 'signersArray');
     try {
       const sourceAccount = await withRetry<any>(() => this.server.loadAccount(adminAddress));
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -219,7 +221,7 @@ export class EmergencyFundsClient {
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
       const sourceAccount = await withRetry<any>(() => this.server.loadAccount(adminAddress));
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -271,7 +273,7 @@ export class EmergencyFundsClient {
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
       const sourceAccount = await withRetry<any>(() => this.server.loadAccount(oracleAddress));
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -315,7 +317,7 @@ export class EmergencyFundsClient {
   ): Promise<TriggerExecutionResult> {
     try {
       const sourceAccount = await withRetry<any>(() => this.server.loadAccount(signerAddress));
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -366,7 +368,7 @@ export class EmergencyFundsClient {
 
     try {
       const primaryAccount = await this.server.loadAccount(approvers[0].publicKey());
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(primaryAccount, {
         fee: String(Number(BASE_FEE) * approvers.length),
@@ -412,10 +414,10 @@ export class EmergencyFundsClient {
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
       const primaryAccount = await withRetry<any>(() => this.server.loadAccount(approvers[0].publicKey()));
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(primaryAccount, {
-        fee: BASE_FEE * approvers.length,
+        fee: String(Number(BASE_FEE) * approvers.length),
         networkPassphrase: this.networkPassphrase,
       })
         .addOperation(
@@ -467,7 +469,7 @@ export class EmergencyFundsClient {
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
       const sourceAccount = await withRetry<any>(() => this.server.loadAccount(adminAddress));
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -512,7 +514,7 @@ export class EmergencyFundsClient {
    */
   async getFundStatus(fundId: string): Promise<FundStatus> {
     try {
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       // Note: This would typically use contract.call() in a simulation
       // For now, returning a placeholder structure
@@ -561,7 +563,7 @@ export class EmergencyFundsClient {
     limit: number = 50
   ): Promise<PaginatedDisbursements> {
     try {
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       // Note: This would typically use contract.call() in a simulation
       // For now, returning a placeholder structure
@@ -584,7 +586,7 @@ export class EmergencyFundsClient {
   ): Promise<{ success: boolean; recalledAmount: string; transactionHash: string }> {
     try {
       const sourceAccount = await withRetry<any>(() => this.server.loadAccount(donorAddress));
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -622,7 +624,7 @@ export class EmergencyFundsClient {
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
       const sourceAccount = await withRetry<any>(() => this.server.loadAccount(adminAddress));
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -660,7 +662,7 @@ export class EmergencyFundsClient {
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
       const sourceAccount = await withRetry<any>(() => this.server.loadAccount(adminAddress));
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -699,7 +701,7 @@ export class EmergencyFundsClient {
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
       const sourceAccount = await this.server.loadAccount(adminAddress);
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -733,7 +735,7 @@ export class EmergencyFundsClient {
    */
   async getMetadata(fundId: string): Promise<Record<string, string>> {
     try {
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       // Note: This would typically use contract.call() in a simulation
       // For now, returning a placeholder structure
@@ -806,7 +808,7 @@ export class EmergencyFundsClient {
   ): Promise<{ success: boolean; transactionHash: string; transferAmount: string }> {
     try {
       const sourceAccount = await this.server.loadAccount(adminAddress);
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
