@@ -16,11 +16,21 @@ import {
   EmergencyFund,
   DisbursementRecord,
   DeploymentOptions,
-  NetworkConfig
+  NetworkConfig,
+  BATCH_MAX_SIZE,
 } from './types';
 import { ReadCache } from './readCache';
-import { withRetry } from './retry';
 import { validateAddress, validateAddressList } from './validation';
+import { withRetry } from './retry';
+
+/**
+ * Maximum number of entries accepted by the on-chain batch disbursement
+ * contract. Keep this in sync with `MAX_BATCH_SIZE` in `src/aid_registry.rs`.
+ */
+export const MAX_BATCH_SIZE = BATCH_MAX_SIZE;
+
+/** A batch must contain at least one entry. */
+export const MIN_BATCH_SIZE = 1;
 
 export class AidClient {
   private server: any;
@@ -141,6 +151,9 @@ export class AidClient {
    * Submit multiple disbursements atomically in a single transaction.
    * All entries succeed or all fail — no partial state.
    *
+   * Batches are limited to `MAX_BATCH_SIZE` (100) entries, matching the
+   * on-chain limit. Split larger requests into multiple atomic batches.
+   *
    * @param requesterKey  Secret key of the requester
    * @param fundId        Fund to draw from
    * @param entries       Array of { beneficiary, amount, purpose }
@@ -153,8 +166,14 @@ export class AidClient {
     entries: Array<{ beneficiary: string; amount: string; purpose: string }>,
     approvers: string[]
   ): Promise<string[]> {
-    if (entries.length === 0) {
+    if (entries.length < MIN_BATCH_SIZE) {
       throw new Error('Batch must contain at least one entry');
+    }
+    if (entries.length > MAX_BATCH_SIZE) {
+      throw new Error(
+        `Batch contains ${entries.length} entries; the maximum is ${MAX_BATCH_SIZE}. ` +
+          'Split the request into smaller batches.'
+      );
     }
 
     const requesterKeypair = Keypair.fromSecret(requesterKey);

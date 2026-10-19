@@ -367,6 +367,11 @@ const qrCode = sdk.beneficiaryClient.generateBeneficiaryQRCode(
 // QR code contains: beneficiary ID, verification factors, balance, spending rules
 ```
 
+> **Offline guarantees and limits:** see
+> [docs/offline-flows.md](docs/offline-flows.md) for QR payload contents,
+> expiry, reconciliation, and abuse-resistance. The USSD handler shown above
+> is a client-side simulator, not a production telco integration.
+
 ### SMS Notifications
 
 ```typescript
@@ -486,6 +491,17 @@ const customConfig = {
 
 const sdk = createDisasterReliefSDK(customConfig);
 ```
+
+## Documentation
+
+- [Offline flows and reconciliation](docs/offline-flows.md) — QR, USSD,
+  offline envelopes, expiry, and abuse-resistance gaps.
+- [Batch size limits](docs/batch-limits.md) — the 100-entry ceiling, atomicity,
+  chunking, and operator guidance.
+- [Accessibility audit](docs/accessibility-audit.md) — form labelling, error
+  association, and non-colour status cues.
+- [API reference](docs/api-reference.md) and
+  [SDK guide](docs/SDK.md).
 
 ## 🧪 Testing
 

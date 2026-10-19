@@ -1,4 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { AidClient } from '../../sdk/src/aidClient';
+import { BeneficiaryClient } from '../../sdk/src/beneficiaryClient';
+import { MerchantClient } from '../../sdk/src/merchantClient';
+import { TransferClient } from '../../sdk/src/transferClient';
 import {
   EmergencyFund,
   BeneficiaryProfile,
@@ -10,6 +14,13 @@ import { AidClient } from '../../sdk/src/aidClient';
 import { BeneficiaryClient } from '../../sdk/src/beneficiaryClient';
 import { MerchantClient } from '../../sdk/src/merchantClient';
 import { TransferClient } from '../../sdk/src/transferClient';
+
+/**
+ * Contract timestamps are seconds, while some SDK-created records use
+ * milliseconds. Normalise both before comparing against `Date.now()`.
+ */
+const toMillis = (timestamp: number): number =>
+  timestamp > 0 && timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
 
 interface DashboardProps {
   aidClient: AidClient;
@@ -55,7 +66,7 @@ const BarChart: React.FC<BarChartProps> = ({ data, height = 160 }) => {
       viewBox={`0 0 ${totalWidth} ${height}`}
       className="w-full"
       role="img"
-      aria-label="Bar chart"
+      aria-label={`Bar chart: ${data.map((item) => `${item.label} ${item.value}`).join(', ')}`}
     >
       {/* Y-axis gridlines */}
       {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
@@ -229,6 +240,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <p className="text-gray-500 mt-1">Real-time overview of aid distribution</p>
         </div>
         <button
+          type="button"
           onClick={loadDashboardData}
           className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm"
         >
@@ -237,7 +249,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
       </div>
 
       {error && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-yellow-700 text-sm">
+        <div
+          role="alert"
+          className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-yellow-700 text-sm"
+        >
           {error}
         </div>
       )}
@@ -330,14 +345,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <h2 className="font-semibold text-gray-800 mb-4">Active Emergency Funds</h2>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
+                  <caption className="sr-only">
+                    Active emergency funds with total, released, and utilization amounts
+                  </caption>
                   <thead>
                     <tr className="border-b border-gray-200">
-                      <th className="text-left py-2 pr-4 text-gray-500 font-medium">Fund</th>
-                      <th className="text-left py-2 pr-4 text-gray-500 font-medium">Disaster</th>
-                      <th className="text-left py-2 pr-4 text-gray-500 font-medium">Area</th>
-                      <th className="text-right py-2 pr-4 text-gray-500 font-medium">Total</th>
-                      <th className="text-right py-2 pr-4 text-gray-500 font-medium">Released</th>
-                      <th className="text-right py-2 text-gray-500 font-medium">Utilization</th>
+                      <th scope="col" className="text-left py-2 pr-4 text-gray-500 font-medium">Fund</th>
+                      <th scope="col" className="text-left py-2 pr-4 text-gray-500 font-medium">Disaster</th>
+                      <th scope="col" className="text-left py-2 pr-4 text-gray-500 font-medium">Area</th>
+                      <th scope="col" className="text-right py-2 pr-4 text-gray-500 font-medium">Total</th>
+                      <th scope="col" className="text-right py-2 pr-4 text-gray-500 font-medium">Released</th>
+                      <th scope="col" className="text-right py-2 text-gray-500 font-medium">Utilization</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -345,14 +363,23 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       const total = parseInt(fund.totalAmount || '0');
                       const released = parseInt(fund.releasedAmount || '0');
                       const utilPct = pct(released, total);
+                      const expiresAt = toMillis(fund.expiresAt);
+                      const isExpired = expiresAt < Date.now();
                       const isExpiringSoon =
-                        fund.expiresAt - Date.now() < 7 * 24 * 60 * 60 * 1000;
+                        !isExpired && expiresAt - Date.now() < 7 * 24 * 60 * 60 * 1000;
                       return (
                         <tr key={fund.id} className="border-b border-gray-100 hover:bg-gray-50">
                           <td className="py-2 pr-4">
                             <span className="font-medium text-gray-900">{fund.name}</span>
+                            {isExpired && (
+                              <span className="ml-2 inline-flex items-center gap-1 text-xs bg-red-100 text-red-800 px-1.5 py-0.5 rounded">
+                                <span aria-hidden="true">✕</span>
+                                Expired
+                              </span>
+                            )}
                             {isExpiringSoon && (
-                              <span className="ml-2 text-xs bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">
+                              <span className="ml-2 inline-flex items-center gap-1 text-xs bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded">
+                                <span aria-hidden="true">!</span>
                                 Expiring soon
                               </span>
                             )}
