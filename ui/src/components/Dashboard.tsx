@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { AidClient } from '../../sdk/src/aidClient';
+import { BeneficiaryClient } from '../../sdk/src/beneficiaryClient';
+import { MerchantClient } from '../../sdk/src/merchantClient';
+import { TransferClient } from '../../sdk/src/transferClient';
 import {
-  AidClient,
-  BeneficiaryClient,
-  MerchantClient,
-  TransferClient,
   EmergencyFund,
   BeneficiaryProfile,
   Merchant,
@@ -168,16 +168,30 @@ export const Dashboard: React.FC<DashboardProps> = ({
       setLoading(true);
       setError(null);
 
+      // Dashboard aggregates use a bounded page (max 100) instead of an
+      // unbounded scan. The contract caps the page size server-side; totals
+      // that need every record should use the dedicated paginated views.
+      const DASHBOARD_AGGREGATE_LIMIT = 100;
+
       const [activeFunds, beneficiaries, merchants, transfers] = await Promise.allSettled([
         aidClient.listActiveFunds(),
-        beneficiaryClient.listBeneficiariesByDisaster('sample_disaster_001'),
-        merchantClient.findMerchantsByLocation(0, 0, 99999),
+        beneficiaryClient.listBeneficiariesPaginated('sample_disaster_001', {
+          limit: DASHBOARD_AGGREGATE_LIMIT,
+        }),
+        merchantClient.findMerchantsByLocationPaginated(0, 0, 99999, {
+          limit: DASHBOARD_AGGREGATE_LIMIT,
+        }),
         transferClient.listBeneficiaryTransfers('sample_beneficiary_001'),
       ]);
 
       const fundsData: EmergencyFund[] = activeFunds.status === 'fulfilled' ? activeFunds.value : [];
-      const beneficiariesData: BeneficiaryProfile[] = beneficiaries.status === 'fulfilled' ? beneficiaries.value : [];
-      const merchantsData: Merchant[] = merchants.status === 'fulfilled' ? merchants.value : [];
+      const beneficiariesData: BeneficiaryProfile[] =
+        beneficiaries.status === 'fulfilled' ? beneficiaries.value.items : [];
+      const merchantsPage =
+        merchants.status === 'fulfilled'
+          ? merchants.value
+          : { merchants: [] as Merchant[], totalCount: 0, hasMore: false };
+      const merchantsData: Merchant[] = merchantsPage.merchants;
       const transfersData: ConditionalTransfer[] = transfers.status === 'fulfilled' ? transfers.value : [];
 
       setFunds(fundsData);
@@ -194,7 +208,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         releasedAmount,
         totalBeneficiaries: beneficiariesData.length,
         activeBeneficiaries: beneficiariesData.filter((b) => b.isActive).length,
-        totalMerchants: merchantsData.length,
+        totalMerchants: merchantsPage.totalCount || merchantsData.length,
         verifiedMerchants: merchantsData.filter((m) => m.isVerified).length,
         totalTransfers: transfersData.length,
         activeTransfers: transfersData.filter((t) => t.isActive).length,
@@ -227,6 +241,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Relief Operations Dashboard</h1>
           <p className="text-gray-500 mt-1">Real-time overview of aid distribution</p>
+          <p className="text-xs text-gray-500 mt-1">
+            Beneficiary metrics reflect a bounded first page (max 100 records). Use the
+            beneficiary and merchant views for full paginated data.
+          </p>
         </div>
         <button
           onClick={loadDashboardData}

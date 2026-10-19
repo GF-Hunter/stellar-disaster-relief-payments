@@ -22,6 +22,27 @@ pub const PAYMENT_NFC: u32 = 2;
 pub const PAYMENT_OFFLINE: u32 = 3;
 pub const PAYMENT_ONLINE: u32 = 4;
 
+/// Default page size for merchant listing endpoints.
+pub const DEFAULT_MERCHANT_PAGE_SIZE: u32 = 20;
+
+/// Maximum page size accepted by merchant listing endpoints (inclusive).
+pub const MAX_MERCHANT_PAGE_SIZE: u32 = 100;
+
+/// Clamp a caller-supplied page size to the supported range.
+///
+/// A `limit` of `0` selects the default; values above the maximum are capped.
+/// This mirrors the beneficiary pagination contract, where the bound is
+/// enforced server-side so a single call cannot request an unbounded scan.
+fn clamp_page_size(limit: u32) -> u32 {
+    if limit == 0 {
+        DEFAULT_MERCHANT_PAGE_SIZE
+    } else if limit > MAX_MERCHANT_PAGE_SIZE {
+        MAX_MERCHANT_PAGE_SIZE
+    } else {
+        limit
+    }
+}
+
 #[contract]
 pub struct MerchantNetwork;
 
@@ -65,6 +86,15 @@ pub struct Merchant {
     pub pending_settlement: U256,
     pub last_settlement_date: u64,
 }
+
+/// A bounded page of merchants plus the total number of matching records.
+///
+/// Tuple shape: `(merchants, total_count, has_more)`.
+///
+/// `offset`-based pagination is used for compatibility with existing SDK
+/// clients. New registrations between page requests can shift offsets, so
+/// callers should de-duplicate by `merchant.id` when accumulating pages.
+pub type PaginatedMerchants = (Vec<Merchant>, u64, bool);
 
 #[derive(Clone)]
 pub struct Location {
@@ -718,7 +748,10 @@ impl MerchantNetwork {
         merchants.get(merchant_id)
     }
     
-    /// Find merchants by location (geographic search)
+    /// Find merchants by location (geographic search, unbounded).
+    ///
+    /// Prefer [`find_merchants_by_location_paginated`] for production clients;
+    /// this helper is retained for backwards compatibility and small datasets.
     pub fn find_merchants_by_location(
         env: Env,
         latitude: f64,
@@ -748,7 +781,9 @@ impl MerchantNetwork {
         nearby_merchants
     }
     
-    /// Find merchants by category
+    /// Find merchants by category (unbounded).
+    ///
+    /// Prefer [`find_merchants_by_category_paginated`] for production clients.
     pub fn find_merchants_by_category(
         env: Env,
         category: u32,
@@ -769,6 +804,118 @@ impl MerchantNetwork {
         category_merchants
     }
     
+    /// List active merchants with offset/limit pagination.
+    ///
+    /// `limit` is clamped to `[1, MAX_MERCHANT_PAGE_SIZE]`; `0` selects the
+    /// default. Prefer this over an unbounded merchant scan in SDK/UI code.
+    pub fn find_merchants_paginated(
+        env: Env,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<Merchant>, u64, bool) {
+        let page_size = clamp_page_size(limit);
+        let merchants_key = Symbol::new(&env, "merchants");
+        let merchants: Map<String, Merchant> = env.storage().instance()
+            .get(&merchants_key)
+            .unwrap_or(Map::new(&env));
+
+        let mut page = Vec::new(&env);
+        let mut total_count: u64 = 0;
+
+        for (_, merchant) in merchants.iter() {
+            if !merchant.is_active {
+                continue;
+            }
+            if total_count >= offset as u64
+                && (page.len() as u64) < page_size as u64
+            {
+                page.push_back(merchant);
+            }
+            total_count += 1;
+        }
+
+        let has_more = (offset as u64 + page.len() as u64) < total_count;
+        (page, total_count, has_more)
+    }
+
+    /// Find active merchants by location with offset/limit pagination.
+    ///
+    /// The geographic predicate is identical to
+    /// [`find_merchants_by_location`], but only a bounded page is returned.
+    pub fn find_merchants_by_location_paginated(
+        env: Env,
+        latitude: f64,
+        longitude: f64,
+        radius_km: f64,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<Merchant>, u64, bool) {
+        let page_size = clamp_page_size(limit);
+        let merchants_key = Symbol::new(&env, "merchants");
+        let merchants: Map<String, Merchant> = env.storage().instance()
+            .get(&merchants_key)
+            .unwrap_or(Map::new(&env));
+
+        let mut page = Vec::new(&env);
+        let mut total_count: u64 = 0;
+
+        for (_, merchant) in merchants.iter() {
+            if !merchant.is_active {
+                continue;
+            }
+            let distance = Self::calculate_distance(
+                latitude,
+                longitude,
+                merchant.location.latitude,
+                merchant.location.longitude,
+            );
+            if distance > radius_km {
+                continue;
+            }
+            if total_count >= offset as u64
+                && (page.len() as u64) < page_size as u64
+            {
+                page.push_back(merchant);
+            }
+            total_count += 1;
+        }
+
+        let has_more = (offset as u64 + page.len() as u64) < total_count;
+        (page, total_count, has_more)
+    }
+
+    /// Find active merchants by category with offset/limit pagination.
+    pub fn find_merchants_by_category_paginated(
+        env: Env,
+        category: u32,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<Merchant>, u64, bool) {
+        let page_size = clamp_page_size(limit);
+        let merchants_key = Symbol::new(&env, "merchants");
+        let merchants: Map<String, Merchant> = env.storage().instance()
+            .get(&merchants_key)
+            .unwrap_or(Map::new(&env));
+
+        let mut page = Vec::new(&env);
+        let mut total_count: u64 = 0;
+
+        for (_, merchant) in merchants.iter() {
+            if !merchant.is_active || merchant.category != category {
+                continue;
+            }
+            if total_count >= offset as u64
+                && (page.len() as u64) < page_size as u64
+            {
+                page.push_back(merchant);
+            }
+            total_count += 1;
+        }
+
+        let has_more = (offset as u64 + page.len() as u64) < total_count;
+        (page, total_count, has_more)
+    }
+
     /// Simple distance calculation (Haversine formula approximation)
     fn calculate_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
         let r = 6371.0; // Earth's radius in km

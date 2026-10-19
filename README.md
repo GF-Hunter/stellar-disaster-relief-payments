@@ -616,6 +616,18 @@ confirmDelivery(adminKey, shipmentId, recipientId, condition, notes)
 getShipmentHistory(shipmentId)
 ```
 
+## Documentation
+
+- [Implementation status](docs/IMPLEMENTATION_STATUS.md) — what is shipped,
+  partial, or still a stub across contracts, SDK, and UI.
+- [Pagination and scan limits](docs/pagination.md) — default page sizes,
+  cursor/offset pagination, and legacy unbounded helpers.
+- [Disbursement purpose taxonomy](docs/purpose-taxonomy.md) — how free-text
+  purposes map to reporting categories.
+- [API reference](docs/api-reference.md), [SDK guide](docs/SDK.md),
+  [deployment guide](docs/deployment-guide.md), and
+  [installation guide](docs/installation-guide.md).
+
 ## 🤝 Contributing
 
 We welcome contributions from the humanitarian and blockchain communities!
