@@ -1,17 +1,12 @@
 import {
   SorobanRpc,
   TransactionBuilder,
-  Networks,
   Keypair,
   Contract,
   Address,
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
-const { Server } = SorobanRpc;
-type Server = SorobanRpc.Server;
-
-import { MultiSigManager } from './multiSig';
 import {
   BeneficiaryProfile,
   VerificationFactor,
@@ -20,12 +15,13 @@ import {
   PaginatedResponse,
   PaginationOptions,
   NetworkConfig,
+  EmergencyFund,
+  BeneficiarySearchOptions,
+  FundSearchOptions,
 } from './types';
+import { OfflineEnvelope, OfflineSigner } from './offlineSigner';
 import { ReadCache } from './readCache';
-import { OfflineSigner, OfflineEnvelope } from './offlineSigner';
-import { withRetry } from './retry';
-import { validateAddress } from './validation';
-import { createHash } from 'crypto-js';
+import { createHash } from 'crypto';
 import {
   BeneficiaryNotFoundError,
   ValidationError,
@@ -35,6 +31,18 @@ import { ReadCache } from './readCache';
 import { withRetry } from './retry';
 import { validateAddress } from './validation';
 import { OfflineEnvelope, OfflineSigner } from './offlineSigner';
+
+/**
+ * Default page size for paginated beneficiary listings.
+ *
+ * Large disaster deployments must not rely on the unbounded
+ * `listBeneficiariesByDisaster` scan; use `listBeneficiariesPaginated` (or the
+ * paginated search helpers) instead.
+ */
+export const DEFAULT_BENEFICIARY_PAGE_SIZE = 20;
+
+/** Maximum page size accepted by the beneficiary contract (inclusive). */
+export const MAX_BENEFICIARY_PAGE_SIZE = 100;
 
 export class BeneficiaryClient {
   private server: any;
@@ -184,7 +192,13 @@ export class BeneficiaryClient {
   }
 
   /**
-   * List beneficiaries by disaster
+   * List beneficiaries by disaster (unbounded scan).
+   *
+   * @deprecated Prefer {@link listBeneficiariesPaginated} or
+   * {@link searchBeneficiaries}. This method loads every beneficiary for the
+   * disaster into memory and is only safe for small datasets. A full disaster
+   * deployment can contain thousands of records, so it must not be used as the
+   * default listing path.
    */
   async listBeneficiariesByDisaster(disasterId: string): Promise<BeneficiaryProfile[]> {
     return this.cache.get(`beneficiary:disaster:${disasterId}`, async () => {
@@ -218,11 +232,16 @@ export class BeneficiaryClient {
     disasterId: string,
     options: PaginationOptions = {}
   ): Promise<PaginatedResponse<BeneficiaryProfile>> {
-    const { cursor = '', limit = 20 } = options;
+    const { cursor = '', limit = DEFAULT_BENEFICIARY_PAGE_SIZE } = options;
 
     // Input validation
-    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new Error('limit must be an integer between 1 and 100');
+    if (
+      typeof limit !== 'number' ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > MAX_BENEFICIARY_PAGE_SIZE
+    ) {
+      throw new Error(`limit must be an integer between 1 and ${MAX_BENEFICIARY_PAGE_SIZE}`);
     }
     if (cursor !== '' && typeof cursor !== 'string') {
       throw new Error('cursor must be a non-empty string or omitted');
@@ -651,15 +670,15 @@ export class BeneficiaryClient {
   ): Promise<PaginatedResponse<BeneficiaryProfile>> {
     const {
       cursor = '',
-      limit = 20,
+      limit = DEFAULT_BENEFICIARY_PAGE_SIZE,
       search = '',
       locationFilter = '',
       activeOnly = true,
       minTrustScore = 0,
     } = options;
 
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new Error('limit must be an integer between 1 and 100');
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BENEFICIARY_PAGE_SIZE) {
+      throw new Error(`limit must be an integer between 1 and ${MAX_BENEFICIARY_PAGE_SIZE}`);
     }
     if (!Number.isInteger(minTrustScore) || minTrustScore < 0 || minTrustScore > 100) {
       throw new Error('minTrustScore must be an integer between 0 and 100');

@@ -84,6 +84,56 @@ mod aid_registry_tests {
     }
 
     #[test]
+    fn test_purpose_taxonomy_exposed() {
+        let env = make_env();
+        let client = deploy(&env);
+
+        let categories = client.get_purpose_taxonomy();
+        assert_eq!(categories.len(), 10);
+        assert_eq!(categories.get(0).unwrap(), str(&env, "food"));
+        assert_eq!(categories.get(9).unwrap(), str(&env, "other"));
+    }
+
+    #[test]
+    fn test_classify_purpose_keywords() {
+        let env = make_env();
+        let client = deploy(&env);
+
+        assert_eq!(
+            client.classify_disbursement_purpose(&str(&env, "Food supplies")),
+            str(&env, "food")
+        );
+        assert_eq!(
+            client.classify_disbursement_purpose(&str(&env, "cash-for-work")),
+            str(&env, "livelihoods")
+        );
+        assert_eq!(
+            client.classify_disbursement_purpose(&str(&env, "mystery grant")),
+            str(&env, "other")
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_submit_disbursement_rejects_empty_purpose() {
+        let env = make_env();
+        let client = deploy(&env);
+        let requester = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let approvers = Vec::from_array(&env, [approver]);
+
+        client.submit_disbursement(
+            &requester,
+            &str(&env, "fund_empty_purpose"),
+            &beneficiary,
+            &u256(10),
+            &str(&env, ""),
+            &approvers,
+        );
+    }
+
+    #[test]
     fn test_list_active_funds() {
         let env = make_env();
         let client = deploy(&env);
@@ -865,6 +915,61 @@ mod merchant_tests {
         assert!(merchant.is_active);
         assert_eq!(merchant.status, STATUS_ACTIVE);
         assert_eq!(merchant.daily_volume_limit, u256(10_000));
+    }
+
+    #[test]
+    fn test_find_merchants_paginated() {
+        let env = make_env();
+        let client = deploy(&env);
+        let owner = Address::generate(&env);
+        let tokens = Vec::from_array(&env, [str(&env, "USDC")]);
+        let vouchers = Vec::new(&env);
+
+        for id in ["merchant_page_a", "merchant_page_b"] {
+            client.register_merchant(
+                &owner,
+                &str(&env, id),
+                &str(&env, "Paginated Merchant"),
+                &str(&env, "grocery"),
+                &0u32,
+                &location(&env),
+                &str(&env, "+509-0000-0000"),
+                &tokens,
+                &vouchers,
+                &true,
+            );
+        }
+
+        // A limit of 0 selects the default (20) and returns both merchants.
+        let (all, total, has_more) = client.find_merchants_paginated(&0u32, &0u32);
+        assert_eq!(all.len(), 2);
+        assert_eq!(total, 2);
+        assert!(!has_more);
+
+        // A page size of 1 returns one item and signals more data.
+        let (first, total_first, more_first) = client.find_merchants_paginated(&0u32, &1u32);
+        assert_eq!(first.len(), 1);
+        assert_eq!(total_first, 2);
+        assert!(more_first);
+
+        let (second, total_second, more_second) = client.find_merchants_paginated(&1u32, &1u32);
+        assert_eq!(second.len(), 1);
+        assert_eq!(total_second, 2);
+        assert!(!more_second);
+        assert_ne!(first.get(0).unwrap().id, second.get(0).unwrap().id);
+
+        // Location pagination applies the same bounds.
+        let (nearby, nearby_total, nearby_more) = client
+            .find_merchants_by_location_paginated(
+                &18.5944f64,
+                &-72.3074f64,
+                &10.0f64,
+                &0u32,
+                &20u32,
+            );
+        assert_eq!(nearby.len(), 2);
+        assert_eq!(nearby_total, 2);
+        assert!(!nearby_more);
     }
 
     #[test]

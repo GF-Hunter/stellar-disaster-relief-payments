@@ -1,21 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { BeneficiaryProfile, VerificationFactor, NetworkConfig } from '../../sdk/src/types';
 import { BeneficiaryClient } from '../../sdk/src/beneficiaryClient';
-import { ErrorMessage, friendlyError } from './ErrorMessage';
-import { FormField } from './FormField';
-import {
-  useFormValidation,
-  type FieldRules,
-  commaSeparatedRequired,
-  compose,
-  identifier,
-  isInteger,
-  isPositiveNumber,
-  maxLength,
-  minValue,
-  required,
-  stellarAddress,
-} from '../validation';
+import { useFocusTrap } from '../accessibility/useFocusTrap';
+
+/** Default page size for the beneficiary list. */
+const PAGE_SIZE = 20;
 
 interface BeneficiaryRegistrationProps {
   beneficiaryClient: BeneficiaryClient;
@@ -23,65 +12,14 @@ interface BeneficiaryRegistrationProps {
   registrarKey: string;
 }
 
-type RegistrationFields = {
-  beneficiaryId: string;
-  name: string;
-  disasterId: string;
-  location: string;
-  walletAddress: string;
-  familySize: string;
-  specialNeeds: string;
-  possessionFactors: string;
-  behavioralFactors: string;
-  socialFactors: string;
-};
-
-type VerificationFields = {
-  beneficiaryId: string;
-  verifierKey: string;
-  providedFactors: string;
-};
-
-const registrationRules: FieldRules<RegistrationFields> = {
-  beneficiaryId: compose(required('Beneficiary ID'), identifier('Beneficiary ID')),
-  name: compose(required('Full name'), maxLength(120, 'Full name')),
-  disasterId: compose(required('Disaster ID'), identifier('Disaster ID')),
-  location: compose(required('Location'), maxLength(160, 'Location')),
-  walletAddress: compose(required('Wallet address'), stellarAddress),
-  familySize: compose(
-    required('Family size'),
-    isInteger('Family size'),
-    minValue(1, 'Family size')
-  ),
-  specialNeeds: maxLength(300, 'Special needs'),
-  possessionFactors: compose(
-    required('Possession factors'),
-    commaSeparatedRequired('Possession factors')
-  ),
-  behavioralFactors: compose(
-    required('Behavioral factors'),
-    commaSeparatedRequired('Behavioral factors')
-  ),
-  socialFactors: compose(
-    required('Social factors'),
-    commaSeparatedRequired('Social factors')
-  ),
-};
-
-const verificationRules: FieldRules<VerificationFields> = {
-  beneficiaryId: compose(required('Beneficiary ID'), identifier('Beneficiary ID')),
-  verifierKey: required('Verifier key'),
-  providedFactors: compose(
-    required('Provided factors'),
-    commaSeparatedRequired('Provided factors')
-  ),
-};
-
-const getTrustScoreStatus = (score: number) => {
-  if (score >= 80) return { label: 'High', icon: '✓', className: 'text-green-700' };
-  if (score >= 60) return { label: 'Medium', icon: '!', className: 'text-yellow-700' };
-  return { label: 'Low', icon: '!', className: 'text-red-700' };
-};
+/** Append `incoming` to `existing`, dropping items whose id is already present. */
+function mergeUnique(
+  existing: BeneficiaryProfile[],
+  incoming: BeneficiaryProfile[]
+): BeneficiaryProfile[] {
+  const seen = new Set(existing.map((item) => item.id));
+  return [...existing, ...incoming.filter((item) => !seen.has(item.id))];
+}
 
 export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = ({
   beneficiaryClient,
@@ -90,12 +28,21 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
 }) => {
   const [beneficiaries, setBeneficiaries] = useState<BeneficiaryProfile[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
   const [showRegistrationForm, setShowRegistrationForm] = useState(false);
   const [showVerificationForm, setShowVerificationForm] = useState(false);
   const [selectedBeneficiary, setSelectedBeneficiary] = useState<BeneficiaryProfile | null>(null);
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [formStatus, setFormStatus] = useState<string | null>(null);
+
+  const closeDetails = () => setSelectedBeneficiary(null);
+  const detailsModalRef = useFocusTrap<HTMLDivElement>(
+    selectedBeneficiary !== null,
+    closeDetails
+  );
 
   // Registration form state
   const [registrationForm, setRegistrationForm] = useState<RegistrationFields>({
@@ -143,13 +90,39 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
   const loadBeneficiaries = async () => {
     try {
       setLoading(true);
-      // Load beneficiaries for a sample disaster
-      const beneficiaries = await beneficiaryClient.listBeneficiariesByDisaster('sample_disaster_001');
-      setBeneficiaries(beneficiaries);
+      // Load the first page of beneficiaries for a sample disaster.
+      const page = await beneficiaryClient.listBeneficiariesPaginated(
+        'sample_disaster_001',
+        { limit: PAGE_SIZE }
+      );
+      setBeneficiaries(page.items);
+      setNextCursor(page.nextCursor);
+      setHasMore(page.hasMore);
     } catch (error) {
       console.error('Failed to load beneficiaries:', error);
+      setBeneficiaries([]);
+      setNextCursor(null);
+      setHasMore(false);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadMoreBeneficiaries = async () => {
+    if (!nextCursor || loadingMore) return;
+    try {
+      setLoadingMore(true);
+      const page = await beneficiaryClient.listBeneficiariesPaginated(
+        'sample_disaster_001',
+        { cursor: nextCursor, limit: PAGE_SIZE }
+      );
+      setBeneficiaries((previous) => mergeUnique(previous, page.items));
+      setNextCursor(page.nextCursor);
+      setHasMore(page.hasMore);
+    } catch (error) {
+      console.error('Failed to load more beneficiaries:', error);
+    } finally {
+      setLoadingMore(false);
     }
   };
 
@@ -773,10 +746,11 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
           <h2 className="text-xl font-semibold">Registered Beneficiaries</h2>
           
           {loading ? (
-            <div className="text-center py-4">Loading...</div>
+            <div className="text-center py-4">Loading beneficiaries...</div>
           ) : beneficiaries.length === 0 ? (
             <div className="text-gray-500 text-center py-4">No beneficiaries found</div>
           ) : (
+            <>
             <div className="grid gap-4">
               {beneficiaries.map((beneficiary) => (
                 <div key={beneficiary.id} className="border rounded-lg p-4 hover:shadow-md transition-shadow">
@@ -817,6 +791,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
                       <div className="mt-4 space-x-2">
                         <button
                           onClick={() => setSelectedBeneficiary(beneficiary)}
+                          aria-haspopup="dialog"
                           className="bg-blue-500 text-white px-3 py-1 text-sm rounded hover:bg-blue-600"
                         >
                           Details
@@ -833,14 +808,45 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
                 </div>
               ))}
             </div>
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              {hasMore ? (
+                <button
+                  type="button"
+                  onClick={loadMoreBeneficiaries}
+                  disabled={loadingMore}
+                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {loadingMore ? 'Loading more...' : 'Load More'}
+                </button>
+              ) : (
+                <p className="text-sm text-gray-600">All beneficiaries loaded</p>
+              )}
+              <p className="text-sm text-gray-600">{beneficiaries.length} total</p>
+            </div>
+            </>
           )}
         </div>
 
         {/* Beneficiary Details Modal */}
         {selectedBeneficiary && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 sm:p-4">
-            <div className="bg-white rounded-lg p-4 sm:p-6 max-w-2xl w-full max-h-screen overflow-y-auto">
-              <h2 className="text-2xl font-bold mb-4">{selectedBeneficiary.name}</h2>
+          <div
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 sm:p-4"
+            role="presentation"
+          >
+            <div
+              ref={detailsModalRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="beneficiary-detail-title"
+              aria-describedby="beneficiary-detail-description"
+              tabIndex={-1}
+              className="bg-white rounded-lg p-4 sm:p-6 max-w-2xl w-full max-h-screen overflow-y-auto"
+            >
+              <h2 id="beneficiary-detail-title" className="text-2xl font-bold mb-4">{selectedBeneficiary.name}</h2>
+              <p id="beneficiary-detail-description" className="sr-only">
+                Beneficiary details, verification factors, and recovery options.
+              </p>
               <div className="space-y-4">
                 <div>
                   <h3 className="font-semibold">Personal Information</h3>
@@ -888,7 +894,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
               
               <div className="mt-6 flex justify-end">
                 <button
-                  onClick={() => setSelectedBeneficiary(null)}
+                  onClick={closeDetails}
                   className="bg-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-400"
                 >
                   Close

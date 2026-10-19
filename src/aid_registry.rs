@@ -41,6 +41,159 @@ const ORACLE_VALUE_MAX_LEN: u32 = 32;
 /// Maximum location string length.
 const ORACLE_LOCATION_MAX_LEN: u32 = 128;
 
+/// Maximum accepted length of the free-text disbursement purpose.
+pub const PURPOSE_MAX_LEN: u32 = 120;
+
+/// Canonical disbursement purpose categories, in reporting order.
+///
+/// The contract stores the operator-entered purpose verbatim for audit, and
+/// exposes these categories so clients can aggregate and apply policy without
+/// depending on free-text spelling. Unknown purposes classify as `other`.
+pub const DISBURSEMENT_PURPOSE_CATEGORIES: [&str; 10] = [
+    "food",
+    "water",
+    "shelter",
+    "medical",
+    "education",
+    "livelihoods",
+    "protection",
+    "logistics",
+    "administration",
+    "other",
+];
+
+/// Case-insensitive whole-token match used by [`categorize_purpose`].
+///
+/// Implemented without allocation so it is safe in the `no_std` Soroban
+/// runtime. A token must be surrounded by non-alphanumeric characters (or the
+/// string boundaries), so `"food"` matches `"food supplies"` but not
+/// `"seafood"`.
+fn contains_ascii_token(haystack: &str, token: &str) -> bool {
+    let haystack = haystack.as_bytes();
+    let token = token.as_bytes();
+    if token.is_empty() || token.len() > haystack.len() {
+        return false;
+    }
+
+    let mut start = 0;
+    while start + token.len() <= haystack.len() {
+        let candidate = &haystack[start..start + token.len()];
+        let matches = candidate
+            .iter()
+            .zip(token.iter())
+            .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase());
+
+        if matches {
+            let before_ok = start == 0 || !haystack[start - 1].is_ascii_alphanumeric();
+            let after = start + token.len();
+            let after_ok = after == haystack.len() || !haystack[after].is_ascii_alphanumeric();
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        start += 1;
+    }
+    false
+}
+
+/// Map a free-text purpose to a canonical reporting category.
+///
+/// Matching is intentionally permissive: known keywords are recognised in any
+/// position, and anything unrecognised falls back to `other` rather than
+/// rejecting the disbursement. Validation of emptiness/length is handled by
+/// [`validate_purpose`].
+pub fn categorize_purpose(purpose: &String) -> &'static str {
+    let raw = purpose.as_str();
+    if raw.trim().is_empty() {
+        return "other";
+    }
+
+    if contains_ascii_token(raw, "food")
+        || contains_ascii_token(raw, "meal")
+        || contains_ascii_token(raw, "nutrition")
+        || contains_ascii_token(raw, "ration")
+        || contains_ascii_token(raw, "groceries")
+    {
+        "food"
+    } else if contains_ascii_token(raw, "water")
+        || contains_ascii_token(raw, "hydration")
+        || contains_ascii_token(raw, "sanitation")
+        || contains_ascii_token(raw, "hygiene")
+        || contains_ascii_token(raw, "wash")
+    {
+        "water"
+    } else if contains_ascii_token(raw, "shelter")
+        || contains_ascii_token(raw, "housing")
+        || contains_ascii_token(raw, "tent")
+        || contains_ascii_token(raw, "blanket")
+        || contains_ascii_token(raw, "bedding")
+    {
+        "shelter"
+    } else if contains_ascii_token(raw, "medical")
+        || contains_ascii_token(raw, "health")
+        || contains_ascii_token(raw, "medicine")
+        || contains_ascii_token(raw, "hospital")
+        || contains_ascii_token(raw, "clinic")
+        || contains_ascii_token(raw, "treatment")
+    {
+        "medical"
+    } else if contains_ascii_token(raw, "education")
+        || contains_ascii_token(raw, "school")
+        || contains_ascii_token(raw, "books")
+        || contains_ascii_token(raw, "tuition")
+        || contains_ascii_token(raw, "learning")
+    {
+        "education"
+    } else if contains_ascii_token(raw, "livelihood")
+        || contains_ascii_token(raw, "livelihoods")
+        || contains_ascii_token(raw, "employment")
+        || contains_ascii_token(raw, "income")
+        || contains_ascii_token(raw, "business")
+        || contains_ascii_token(raw, "agriculture")
+        || contains_ascii_token(raw, "training")
+    {
+        "livelihoods"
+    } else if contains_ascii_token(raw, "protection")
+        || contains_ascii_token(raw, "safety")
+        || contains_ascii_token(raw, "legal")
+        || contains_ascii_token(raw, "psychosocial")
+        || contains_ascii_token(raw, "gbv")
+    {
+        "protection"
+    } else if contains_ascii_token(raw, "logistics")
+        || contains_ascii_token(raw, "transport")
+        || contains_ascii_token(raw, "fuel")
+        || contains_ascii_token(raw, "delivery")
+        || contains_ascii_token(raw, "warehouse")
+    {
+        "logistics"
+    } else if contains_ascii_token(raw, "administration")
+        || contains_ascii_token(raw, "admin")
+        || contains_ascii_token(raw, "staff")
+        || contains_ascii_token(raw, "salaries")
+        || contains_ascii_token(raw, "overhead")
+        || contains_ascii_token(raw, "operations")
+    {
+        "administration"
+    } else {
+        "other"
+    }
+}
+
+/// Validate a free-text disbursement purpose before it is persisted.
+///
+/// Panics with an operator-readable message when the purpose is empty or
+/// exceeds [`PURPOSE_MAX_LEN`]. Free text is still accepted; the taxonomy is
+/// applied at reporting time via [`categorize_purpose`].
+fn validate_purpose(env: &Env, purpose: &String) {
+    if purpose.as_str().trim().is_empty() {
+        panic_with_error!(env, "Purpose must not be empty");
+    }
+    if purpose.len() > PURPOSE_MAX_LEN {
+        panic_with_error!(env, "Purpose exceeds maximum length");
+    }
+}
+
 #[contract]
 pub struct AidRegistry;
 
@@ -324,7 +477,10 @@ impl AidRegistry {
         approvers: Vec<Address>,
     ) {
         requester.require_auth();
-        
+
+        // Validate the free-text purpose (non-empty, bounded length).
+        validate_purpose(&env, &purpose);
+
         // Validate approvers list
         require_non_empty_address_list(&env, &approvers);
         
@@ -428,6 +584,23 @@ impl AidRegistry {
             total_count,
             has_more,
         }
+    }
+
+    /// Return the canonical disbursement purpose taxonomy.
+    ///
+    /// Clients can use this list for dropdowns and reporting buckets. The
+    /// on-chain `purpose` string remains free text for auditability.
+    pub fn get_purpose_taxonomy(env: Env) -> Vec<String> {
+        let mut categories = Vec::new(&env);
+        for category in DISBURSEMENT_PURPOSE_CATEGORIES.iter() {
+            categories.push_back(String::from_str(&env, *category));
+        }
+        categories
+    }
+
+    /// Classify a free-text purpose into a canonical reporting category.
+    pub fn classify_disbursement_purpose(env: Env, purpose: String) -> String {
+        String::from_str(&env, categorize_purpose(&purpose))
     }
 
     /// Deactivate expired funds
@@ -850,10 +1023,11 @@ impl AidRegistry {
 
         // ── Validate each entry and compute total ────────────────────────────
         let mut total = U256::from_u64(0);
-        for (_, amount, _) in entries.iter() {
+        for (_, amount, purpose) in entries.iter() {
             if amount == U256::from_u64(0) {
                 panic_with_error!(&env, "Amount must be greater than zero");
             }
+            validate_purpose(&env, &purpose);
             total = total + amount;
         }
 
@@ -927,6 +1101,9 @@ impl AidRegistry {
     ) -> bool {
         // Validate approvers list before loading fund
         require_non_empty_address_list(&env, &approvers);
+
+        // Validate the free-text purpose (non-empty, bounded length).
+        validate_purpose(&env, &purpose);
 
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
@@ -1207,7 +1384,10 @@ impl AidRegistry {
         approvers: Vec<Address>,
     ) {
         admin.require_auth();
-        
+
+        // Validate the free-text purpose (non-empty, bounded length).
+        validate_purpose(&env, &purpose);
+
         // Create unique key for this disbursement
         let disbursement_key = format!("disbursement_{}_{}", beneficiary_address, purpose);
         

@@ -1,7 +1,6 @@
 import {
   SorobanRpc,
   TransactionBuilder,
-  Networks,
   Keypair,
   Contract,
   Address,
@@ -15,18 +14,25 @@ import {
   Merchant,
   Transaction,
   Location,
-  MerchantOnboardingRequest
+  MerchantOnboardingRequest,
+  NetworkConfig,
+  MerchantPaginationOptions,
+  PaginatedMerchants,
 } from './types';
 import {
   MerchantNotFoundError,
   NetworkError,
   ValidationError,
 } from './errors';
-import { ReadCache } from './readCache';
-import { OfflineSigner, OfflineEnvelope } from './offlineSigner';
-import { MultiSigManager } from './multiSig';
 import { withRetry } from './retry';
-import { NetworkConfig } from './types';
+import { ReadCache } from './readCache';
+import { OfflineEnvelope, OfflineSigner } from './offlineSigner';
+
+/** Default page size for merchant listing endpoints. */
+export const DEFAULT_MERCHANT_PAGE_SIZE = 20;
+
+/** Maximum page size accepted by the merchant contract. */
+export const MAX_MERCHANT_PAGE_SIZE = 100;
 
 export class MerchantClient {
   private server: any;
@@ -197,7 +203,10 @@ export class MerchantClient {
   }
 
   /**
-   * Find merchants by location (geographic search)
+   * Find merchants by location (geographic search, unbounded).
+   *
+   * @deprecated Prefer {@link findMerchantsByLocationPaginated} for production
+   * clients; this helper loads every matching merchant.
    */
   async findMerchantsByLocation(
     latitude: number,
@@ -216,6 +225,112 @@ export class MerchantClient {
     } catch (error) {
       console.error('Failed to find merchants by location:', error);
       return [];
+    }
+  }
+
+  /**
+   * Normalise and validate `offset` / `limit` for merchant listing calls.
+   */
+  private normalizeMerchantPageOptions(
+    options: MerchantPaginationOptions = {}
+  ): { offset: number; limit: number } {
+    const { offset = 0, limit = DEFAULT_MERCHANT_PAGE_SIZE } = options;
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new Error('offset must be a non-negative integer');
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_MERCHANT_PAGE_SIZE) {
+      throw new Error(`limit must be an integer between 1 and ${MAX_MERCHANT_PAGE_SIZE}`);
+    }
+    return { offset, limit };
+  }
+
+  /** Convert the contract tuple into a typed page. */
+  private toMerchantPage(value: unknown): PaginatedMerchants {
+    const [merchants, totalCount, hasMore] = (value ?? [[], 0, false]) as [
+      Merchant[],
+      number | bigint,
+      boolean,
+    ];
+    return {
+      merchants: merchants ?? [],
+      totalCount: Number(totalCount) || 0,
+      hasMore: Boolean(hasMore),
+    };
+  }
+
+  /**
+   * List active merchants with offset/limit pagination.
+   *
+   * This is the preferred listing path for dashboards: the contract returns a
+   * bounded page plus `totalCount` / `hasMore`, so the UI never loads an
+   * unbounded merchant set.
+   */
+  async findMerchantsPaginated(
+    options: MerchantPaginationOptions = {}
+  ): Promise<PaginatedMerchants> {
+    const { offset, limit } = this.normalizeMerchantPageOptions(options);
+    try {
+      const result = await this.contract.call(
+        'find_merchants_paginated',
+        nativeToScVal(offset),
+        nativeToScVal(limit)
+      );
+      return this.toMerchantPage(scValToNative(result.result.retval));
+    } catch (error) {
+      console.error('Failed to list merchants (paginated):', error);
+      return { merchants: [], totalCount: 0, hasMore: false };
+    }
+  }
+
+  /**
+   * Find active merchants by location with offset/limit pagination.
+   *
+   * @param latitude  Centre latitude in decimal degrees.
+   * @param longitude Centre longitude in decimal degrees.
+   * @param radiusKm  Search radius in kilometres.
+   */
+  async findMerchantsByLocationPaginated(
+    latitude: number,
+    longitude: number,
+    radiusKm: number,
+    options: MerchantPaginationOptions = {}
+  ): Promise<PaginatedMerchants> {
+    const { offset, limit } = this.normalizeMerchantPageOptions(options);
+    try {
+      const result = await this.contract.call(
+        'find_merchants_by_location_paginated',
+        nativeToScVal(latitude),
+        nativeToScVal(longitude),
+        nativeToScVal(radiusKm),
+        nativeToScVal(offset),
+        nativeToScVal(limit)
+      );
+      return this.toMerchantPage(scValToNative(result.result.retval));
+    } catch (error) {
+      console.error('Failed to find merchants by location (paginated):', error);
+      return { merchants: [], totalCount: 0, hasMore: false };
+    }
+  }
+
+  /**
+   * Find active merchants by category with offset/limit pagination.
+   */
+  async findMerchantsByCategoryPaginated(
+    category: number,
+    options: MerchantPaginationOptions = {}
+  ): Promise<PaginatedMerchants> {
+    const { offset, limit } = this.normalizeMerchantPageOptions(options);
+    try {
+      const result = await this.contract.call(
+        'find_merchants_by_category_paginated',
+        nativeToScVal(category),
+        nativeToScVal(offset),
+        nativeToScVal(limit)
+      );
+      return this.toMerchantPage(scValToNative(result.result.retval));
+    } catch (error) {
+      console.error('Failed to find merchants by category (paginated):', error);
+      return { merchants: [], totalCount: 0, hasMore: false };
     }
   }
 
@@ -545,41 +660,6 @@ export class MerchantClient {
     token: string,
     purpose: string
   ): Promise<OfflineEnvelope> {
-    const sourceAccount = await this.server.getAccount(merchantPublicKey);
-    const tx = new TransactionBuilder(sourceAccount, {
-      fee: '200',
-      networkPassphrase: this.getNetworkPassphrase(),
-    })
-      .addOperation(
-        this.contract.call(
-          'process_payment',
-          ...[
-            new Address(merchantPublicKey).toScVal(),
-            new Address(beneficiaryPublicKey).toScVal(),
-            nativeToScVal(merchantId), nativeToScVal(beneficiaryId),
-            nativeToScVal(amount), nativeToScVal(token), nativeToScVal(purpose),
-          ]
-        )
-      )
-      .setTimeout(0)
-      .build();
-    return OfflineSigner.serialize(tx);
-  }
-
-  /**
-   * Build a multi-sig payment transaction for offline collection of signatures.
-   */
-  async buildMultiSigPayment(
-    merchantPublicKey: string,
-    beneficiaryPublicKey: string,
-    merchantId: string,
-    beneficiaryId: string,
-    amount: string,
-    token: string,
-    purpose: string,
-    authorizedSigners: string[],
-    threshold: number
-  ): Promise<MultiSigManager> {
     const sourceAccount = await this.server.getAccount(merchantPublicKey);
     const tx = new TransactionBuilder(sourceAccount, {
       fee: '200',
