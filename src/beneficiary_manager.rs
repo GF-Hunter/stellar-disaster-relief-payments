@@ -1,4 +1,5 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64, BytesN};
+use crate::geo::{GeoPoint, GeofenceZone as StdGeofenceZone, GeoFormatter, GeoMigration};
 
 #[contract]
 pub struct BeneficiaryManager;
@@ -71,14 +72,9 @@ pub struct TemporaryCredential {
     pub is_active: bool,
 }
 
-#[derive(Clone)]
-pub struct GeofenceZone {
-    pub zone_name: String,
-    pub latitude: i64, // Scaled by 1e6 for precision
-    pub longitude: i64,
-    pub radius_meters: u32,
-    pub is_safe: bool,
-}
+/// Use standardized GeofenceZone from geo module
+/// Type alias for backward compatibility
+pub type GeofenceZone = StdGeofenceZone;
 
 #[derive(Clone)]
 pub struct SocialRecoveryRequest {
@@ -715,11 +711,12 @@ impl BeneficiaryManager {
     }
 
     /// Check if identity is within safe geofence zone
+    /// Uses standardized GeoPoint for coordinates (f64 degrees)
     pub fn check_geofence(
         env: Env,
         id_hash: BytesN<32>,
-        current_latitude: i64,
-        current_longitude: i64,
+        current_latitude: f64,
+        current_longitude: f64,
     ) -> bool {
         let identities_key = Symbol::new(&env, "identities");
         let identities: Map<BytesN<32>, BeneficiaryIdentity> = env.storage().persistent()
@@ -731,33 +728,18 @@ impl BeneficiaryManager {
             None => return false,
         };
         
+        let current_point = GeoPoint::new(current_latitude, current_longitude).unwrap_or(GeoPoint::new(0.0, 0.0).unwrap());
+        
         // Check if within any safe zone
         for zone in identity.geofence_zones.iter() {
             if zone.is_safe {
-                let distance = Self::calculate_distance(
-                    zone.latitude,
-                    zone.longitude,
-                    current_latitude,
-                    current_longitude,
-                );
-                
-                if distance <= zone.radius_meters {
+                if zone.contains(&current_point) {
                     return true;
                 }
             }
         }
         
         false
-    }
-
-    /// Calculate distance between two points (simplified Haversine)
-    fn calculate_distance(lat1: i64, lon1: i64, lat2: i64, lon2: i64) -> u32 {
-        // Simplified distance calculation (in meters)
-        // In production, use proper Haversine formula
-        let dlat = (lat2 - lat1).abs();
-        let dlon = (lon2 - lon1).abs();
-        let distance = ((dlat * dlat + dlon * dlon) as f64).sqrt();
-        (distance / 10.0) as u32 // Rough approximation
     }
 
     /// Update trust score based on activity

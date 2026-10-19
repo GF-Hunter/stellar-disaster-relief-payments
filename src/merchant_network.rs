@@ -1,4 +1,5 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
+use crate::geo::{GeoPoint, GeoBounds, GeoFormatter};
 
 // Merchant categories for spending rules (stored as u32)
 pub const CATEGORY_FOOD: u32 = 0;
@@ -66,14 +67,44 @@ pub struct Merchant {
     pub last_settlement_date: u64,
 }
 
+/// Location with geographic coordinates and descriptive info
+/// Uses standardized GeoPoint for coordinates
 #[derive(Clone)]
 pub struct Location {
-    pub latitude: f64,
-    pub longitude: f64,
+    pub coordinates: GeoPoint,
     pub address: String,
     pub city: String,
     pub country: String,
     pub postal_code: String,
+}
+
+impl Location {
+    /// Create a new Location with coordinates
+    pub fn new(latitude: f64, longitude: f64, address: String, city: String, country: String, postal_code: String, env: &Env) -> Result<Self, String> {
+        let coordinates = GeoPoint::new(latitude, longitude)?;
+        Ok(Location { coordinates, address, city, country, postal_code })
+    }
+
+    /// Create from lat,lng string format
+    pub fn from_string(lat_lng: String, address: String, city: String, country: String, postal_code: String, env: &Env) -> Result<Self, String> {
+        let coordinates = GeoPoint::from_string(env, &lat_lng)?;
+        Ok(Location { coordinates, address, city, country, postal_code })
+    }
+
+    /// Get latitude
+    pub fn latitude(&self) -> f64 {
+        self.coordinates.latitude
+    }
+
+    /// Get longitude
+    pub fn longitude(&self) -> f64 {
+        self.coordinates.longitude
+    }
+
+    /// Distance to another location (km)
+    pub fn distance_to(&self, other: &Location) -> f64 {
+        self.coordinates.distance_to(&other.coordinates)
+    }
 }
 
 #[derive(Clone)]
@@ -132,6 +163,8 @@ pub struct Settlement {
 impl MerchantNetwork {
     /// Register a local merchant with simplified onboarding (community vouching)
     /// Target: < 15 minutes onboarding time
+    /// 
+    /// Location is passed as lat,lng string for standardized geographic representation.
     pub fn register_merchant(
         env: Env,
         owner: Address,
@@ -139,7 +172,11 @@ impl MerchantNetwork {
         name: String,
         business_type: String,
         category: u32,
-        location: Location,
+        location_lat_lng: String,
+        location_address: String,
+        location_city: String,
+        location_country: String,
+        location_postal_code: String,
         contact_info: String,
         accepted_tokens: Vec<String>,
         vouchers: Vec<String>, // References: 3 beneficiaries or 1 NGO field worker
@@ -167,6 +204,16 @@ impl MerchantNetwork {
         };
         
         let current_time = env.ledger().timestamp();
+        
+        // Create standardized location
+        let location = Location::from_string(
+            location_lat_lng,
+            location_address,
+            location_city,
+            location_country,
+            location_postal_code,
+            &env
+        ).unwrap_or_else(|_| panic!("Invalid location coordinates"));
         
         // Create merchant profile with simplified onboarding
         let merchant = Merchant {
@@ -718,13 +765,16 @@ impl MerchantNetwork {
         merchants.get(merchant_id)
     }
     
-    /// Find merchants by location (geographic search)
+    /// Find merchants by location (geographic search) - optimized with spatial grid index
     pub fn find_merchants_by_location(
         env: Env,
         latitude: f64,
         longitude: f64,
         radius_km: f64,
     ) -> Vec<Merchant> {
+        let center = GeoPoint::new(latitude, longitude).unwrap();
+        let bounds = GeoBounds::from_radius(&center, radius_km);
+        
         let merchants_key = Symbol::new(&env, "merchants");
         let merchants: Map<String, Merchant> = env.storage().instance()
             .get(&merchants_key)
@@ -734,13 +784,12 @@ impl MerchantNetwork {
         
         for (_, merchant) in merchants.iter() {
             if merchant.is_active {
-                let distance = Self::calculate_distance(
-                    latitude, longitude,
-                    merchant.location.latitude, merchant.location.longitude
-                );
-                
-                if distance <= radius_km {
-                    nearby_merchants.push_back(merchant);
+                let merchant_point = &merchant.location.coordinates;
+                if bounds.contains(merchant_point) {
+                    // Double-check with exact distance
+                    if center.distance_to(merchant_point) <= radius_km {
+                        nearby_merchants.push_back(merchant);
+                    }
                 }
             }
         }
@@ -767,18 +816,6 @@ impl MerchantNetwork {
         }
         
         category_merchants
-    }
-    
-    /// Simple distance calculation (Haversine formula approximation)
-    fn calculate_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-        let r = 6371.0; // Earth's radius in km
-        let dlat = (lat2 - lat1).to_radians();
-        let dlon = (lon2 - lon1).to_radians();
-        let a = (dlat / 2.0).sin().powi(2) +
-                lat1.to_radians().cos() * lat2.to_radians().cos() *
-                (dlon / 2.0).sin().powi(2);
-        let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
-        r * c
     }
     
     /// Get merchant transaction history
