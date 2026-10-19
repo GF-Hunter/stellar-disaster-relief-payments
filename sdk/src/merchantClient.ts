@@ -1,36 +1,64 @@
 import {
-  Server,
+  SorobanRpc,
   TransactionBuilder,
-  Networks,
   Keypair,
   Contract,
   Address,
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+const { Server } = SorobanRpc;
+type Server = SorobanRpc.Server;
+
 import {
   Merchant,
   Transaction,
   Location,
-  MerchantOnboardingRequest
+  MerchantOnboardingRequest,
+  NetworkConfig,
 } from './types';
 import {
   MerchantNotFoundError,
   NetworkError,
   ValidationError,
 } from './errors';
+import {
+  DEFAULT_OFFCHAIN_POLICY,
+  OffchainPolicy,
+  OffchainRequestBlockedError,
+  normaliseHost,
+  safeFetchText,
+} from './offchainFetch';
 
 export class MerchantClient {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: NetworkConfig;
   readonly cache: ReadCache;
+  /**
+   * #238 — policy governing off-chain lookups. Empty by default, which means
+   * *every* off-chain request is refused until a host is allowlisted. Failing
+   * closed is deliberate: a silent default-allow would keep the SSRF surface
+   * open for anyone who forgot to configure it.
+   */
+  private offchainPolicy: OffchainPolicy;
 
-  constructor(config: NetworkConfig) {
+  constructor(config: NetworkConfig, offchainPolicy: OffchainPolicy = {}) {
     this.config = config;
     this.server = new Server(config.rpcUrl);
     this.contract = new Contract(config.contractIds.merchantNetwork);
     this.cache = new ReadCache(config);
+    this.offchainPolicy = offchainPolicy;
+  }
+
+  /**
+   * Replace the off-chain fetch policy.
+   *
+   * @example
+   * client.setOffchainPolicy({ allowedHostSuffixes: ['.relief.example'] });
+   */
+  setOffchainPolicy(policy: OffchainPolicy): void {
+    this.offchainPolicy = policy;
   }
 
   /**
@@ -189,7 +217,10 @@ export class MerchantClient {
   }
 
   /**
-   * Find merchants by location (geographic search)
+   * Find merchants by location (geographic search, unbounded).
+   *
+   * @deprecated Prefer {@link findMerchantsByLocationPaginated} for production
+   * clients; this helper loads every matching merchant.
    */
   async findMerchantsByLocation(
     latitude: number,
@@ -208,6 +239,112 @@ export class MerchantClient {
     } catch (error) {
       console.error('Failed to find merchants by location:', error);
       return [];
+    }
+  }
+
+  /**
+   * Normalise and validate `offset` / `limit` for merchant listing calls.
+   */
+  private normalizeMerchantPageOptions(
+    options: MerchantPaginationOptions = {}
+  ): { offset: number; limit: number } {
+    const { offset = 0, limit = DEFAULT_MERCHANT_PAGE_SIZE } = options;
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new Error('offset must be a non-negative integer');
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_MERCHANT_PAGE_SIZE) {
+      throw new Error(`limit must be an integer between 1 and ${MAX_MERCHANT_PAGE_SIZE}`);
+    }
+    return { offset, limit };
+  }
+
+  /** Convert the contract tuple into a typed page. */
+  private toMerchantPage(value: unknown): PaginatedMerchants {
+    const [merchants, totalCount, hasMore] = (value ?? [[], 0, false]) as [
+      Merchant[],
+      number | bigint,
+      boolean,
+    ];
+    return {
+      merchants: merchants ?? [],
+      totalCount: Number(totalCount) || 0,
+      hasMore: Boolean(hasMore),
+    };
+  }
+
+  /**
+   * List active merchants with offset/limit pagination.
+   *
+   * This is the preferred listing path for dashboards: the contract returns a
+   * bounded page plus `totalCount` / `hasMore`, so the UI never loads an
+   * unbounded merchant set.
+   */
+  async findMerchantsPaginated(
+    options: MerchantPaginationOptions = {}
+  ): Promise<PaginatedMerchants> {
+    const { offset, limit } = this.normalizeMerchantPageOptions(options);
+    try {
+      const result = await this.contract.call(
+        'find_merchants_paginated',
+        nativeToScVal(offset),
+        nativeToScVal(limit)
+      );
+      return this.toMerchantPage(scValToNative(result.result.retval));
+    } catch (error) {
+      console.error('Failed to list merchants (paginated):', error);
+      return { merchants: [], totalCount: 0, hasMore: false };
+    }
+  }
+
+  /**
+   * Find active merchants by location with offset/limit pagination.
+   *
+   * @param latitude  Centre latitude in decimal degrees.
+   * @param longitude Centre longitude in decimal degrees.
+   * @param radiusKm  Search radius in kilometres.
+   */
+  async findMerchantsByLocationPaginated(
+    latitude: number,
+    longitude: number,
+    radiusKm: number,
+    options: MerchantPaginationOptions = {}
+  ): Promise<PaginatedMerchants> {
+    const { offset, limit } = this.normalizeMerchantPageOptions(options);
+    try {
+      const result = await this.contract.call(
+        'find_merchants_by_location_paginated',
+        nativeToScVal(latitude),
+        nativeToScVal(longitude),
+        nativeToScVal(radiusKm),
+        nativeToScVal(offset),
+        nativeToScVal(limit)
+      );
+      return this.toMerchantPage(scValToNative(result.result.retval));
+    } catch (error) {
+      console.error('Failed to find merchants by location (paginated):', error);
+      return { merchants: [], totalCount: 0, hasMore: false };
+    }
+  }
+
+  /**
+   * Find active merchants by category with offset/limit pagination.
+   */
+  async findMerchantsByCategoryPaginated(
+    category: number,
+    options: MerchantPaginationOptions = {}
+  ): Promise<PaginatedMerchants> {
+    const { offset, limit } = this.normalizeMerchantPageOptions(options);
+    try {
+      const result = await this.contract.call(
+        'find_merchants_by_category_paginated',
+        nativeToScVal(category),
+        nativeToScVal(offset),
+        nativeToScVal(limit)
+      );
+      return this.toMerchantPage(scValToNative(result.result.retval));
+    } catch (error) {
+      console.error('Failed to find merchants by category (paginated):', error);
+      return { merchants: [], totalCount: 0, hasMore: false };
     }
   }
 
@@ -318,15 +455,40 @@ export class MerchantClient {
   }
 
   /**
-   * Discover merchants using Stellar TOML
+   * Discover merchants using Stellar TOML.
+   *
+   * #238 — this previously did `fetch('https://' + domain + '/.well-known/stellar.toml')`
+   * with a caller-supplied, entirely unvalidated `domain`. Because the value
+   * was interpolated into a URL, a caller could supply `user@evil.com` (which
+   * makes the request go to `evil.com`), `localhost:8000` or
+   * `169.254.169.254` (which reach internal services and cloud metadata), and
+   * the response was then parsed and handed back as merchant data.
+   *
+   * Now the host is normalised and checked against the allowlist, the request
+   * is HTTPS-only with no credential headers, redirects are followed manually
+   * with the allowlist re-applied at every hop, and the response is
+   * size-capped. A blocked request returns an empty list and logs the reason
+   * rather than silently returning nothing.
+   *
+   * @throws {ValidationError} if `domain` is not a bare hostname.
    */
   async discoverMerchantsFromStellarToml(domain: string): Promise<Merchant[]> {
-    try {
-      // Fetch Stellar TOML file
-      const tomlUrl = `https://${domain}/.well-known/stellar.toml`;
-      const response = await fetch(tomlUrl);
-      const tomlData = await response.text();
+    const host = normaliseHost(domain);
+    const tomlUrl = `https://${host}/.well-known/stellar.toml`;
 
+    let tomlData: string;
+    try {
+      const result = await safeFetchText(tomlUrl, this.offchainPolicy);
+      tomlData = result.body;
+    } catch (error) {
+      if (error instanceof OffchainRequestBlockedError) {
+        console.error(`Refused Stellar TOML discovery for "${host}": ${error.message}`);
+        return [];
+      }
+      throw error;
+    }
+
+    try {
       // Parse TOML and extract merchant information
       // This is a simplified implementation
       const merchants: Merchant[] = [];
@@ -373,7 +535,7 @@ export class MerchantClient {
 
       return merchants;
     } catch (error) {
-      console.error('Failed to discover merchants from TOML:', error);
+      console.error('Failed to parse merchants from TOML:', error);
       return [];
     }
   }
@@ -535,14 +697,6 @@ export class MerchantClient {
     beneficiaryId: string,
     amount: string,
     token: string,
-    purpose: string,
-    authorizedSigners: string[],
-    threshold: number
-  ): Promise<MultiSigManager> {
-    const merchantKeypair = Keypair.fromSecret(merchantKey);
-    const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
-    const merchantAccount = await this.server.getAccount(merchantKeypair.publicKey());
-    const tx = new TransactionBuilder(merchantAccount, {
     purpose: string
   ): Promise<OfflineEnvelope> {
     const sourceAccount = await this.server.getAccount(merchantPublicKey);
@@ -563,8 +717,9 @@ export class MerchantClient {
       )
       .setTimeout(0)
       .build();
-    return OfflineSigner.serialize(tx);
+    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
   }
+
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':

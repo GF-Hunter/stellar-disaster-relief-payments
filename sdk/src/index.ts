@@ -1,12 +1,27 @@
 // Export all clients
-export { AidClient } from './aidClient';
+export { AidClient, MAX_BATCH_SIZE, MIN_BATCH_SIZE } from './aidClient';
 export { CostEstimationClient } from './costEstimation';
 export type { CostEstimate, CostEstimationOptions, ContractInteractionType } from './costEstimation';
 export { estimateContractCost, estimateMultipleContractCosts, estimateTotalCost } from './costEstimation';
-export { BeneficiaryClient } from './beneficiaryClient';
+export {
+  BeneficiaryClient,
+  DEFAULT_BENEFICIARY_PAGE_SIZE,
+  MAX_BENEFICIARY_PAGE_SIZE,
+} from './beneficiaryClient';
+export {
+  normalizePurpose,
+  categorizePurpose,
+  classifyPurpose,
+  validatePurpose,
+  isDisbursementPurposeCategory,
+} from './purposeTaxonomy';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
 export { OfflineAuthClient } from './offlineAuth';
-export { MerchantClient } from './merchantClient';
+export {
+  MerchantClient,
+  DEFAULT_MERCHANT_PAGE_SIZE,
+  MAX_MERCHANT_PAGE_SIZE,
+} from './merchantClient';
 export { TransferClient } from './transferClient';
 export { TrackerClient } from './trackerClient';
 

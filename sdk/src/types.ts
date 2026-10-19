@@ -54,6 +54,23 @@ export interface Location {
   city: string;
   country: string;
   postalCode: string;
+  facilityName?: string;
+  contactPerson?: string;
+}
+
+/** Offset pagination options for merchant listing endpoints. */
+export interface MerchantPaginationOptions {
+  /** Number of matching records to skip. Defaults to 0. */
+  offset?: number;
+  /** Page size (1–100). Defaults to 20. */
+  limit?: number;
+}
+
+/** A bounded page of merchants plus the total matching count. */
+export interface PaginatedMerchants {
+  merchants: Merchant[];
+  totalCount: number;
+  hasMore: boolean;
 }
 
 export interface Transaction {
@@ -85,6 +102,47 @@ export interface EmergencyFund {
   metadata: Record<string, string>;
 }
 
+// ─── Disbursement purpose taxonomy ───────────────────────────────────────────
+
+/**
+ * Canonical reporting categories for disbursement purposes.
+ *
+ * The contract continues to store the operator-entered `purpose` string for
+ * auditability, but every purpose is mapped to one of these categories so that
+ * reporting, duplicate-intent detection and guardrails do not depend on
+ * free-text spelling.
+ */
+export const DISBURSEMENT_PURPOSE_CATEGORIES = [
+  'food',
+  'water',
+  'shelter',
+  'medical',
+  'education',
+  'livelihoods',
+  'protection',
+  'logistics',
+  'administration',
+  'other',
+] as const;
+
+export type DisbursementPurposeCategory =
+  (typeof DISBURSEMENT_PURPOSE_CATEGORIES)[number];
+
+/** Maximum accepted length of the free-text purpose field. */
+export const PURPOSE_MAX_LENGTH = 120;
+
+/** Result of classifying a free-text purpose. */
+export interface PurposeClassification {
+  /** The original, untrimmed value supplied by the caller. */
+  raw: string;
+  /** Lower-cased, underscore-normalised value. */
+  normalized: string;
+  /** Canonical category used for aggregation and policy. */
+  category: DisbursementPurposeCategory;
+  /** True when `normalized` is itself a canonical category name. */
+  isCanonical: boolean;
+}
+
 export interface DisbursementRecord {
   id: string;
   fundId: string;
@@ -92,15 +150,26 @@ export interface DisbursementRecord {
   amount: string;
   timestamp: number;
   purpose: string;
+  /** Derived classification; not required to be persisted on-chain. */
+  purposeCategory?: DisbursementPurposeCategory;
   approvedBy: string[];
   transactionHash: string;
 }
+
+/**
+ * Maximum number of operations in one batch transaction and entries in one
+ * batch disbursement. Matches Stellar's 100-operation limit and the on-chain
+ * `MAX_BATCH_SIZE` in `src/aid_registry.rs`.
+ */
+export const BATCH_MAX_SIZE = 100;
 
 /** A single entry within a batch disbursement request */
 export interface BatchDisbursementEntry {
   beneficiary: string;
   amount: string;
   purpose: string;
+  /** Optional explicit category; defaults to the classifier result. */
+  purposeCategory?: DisbursementPurposeCategory;
 }
 
 /** Result returned after submitting a batch disbursement */
@@ -281,6 +350,57 @@ export interface NetworkConfig {
   logging?: import('./logger').LoggingConfig;
 }
 
+/** Contract slots that can be targeted by batch/upgrade clients. */
+export type ContractTarget = keyof NetworkConfig['contractIds'];
+
+/** Maximum number of contract calls that can be packed into one Stellar transaction. */
+export const BATCH_MAX_SIZE = 100;
+
+/** A single contract invocation within a batch. */
+export interface BatchContractCall {
+  contractTarget: ContractTarget;
+  method: string;
+  args: any[];
+}
+
+/** Request to execute multiple contract calls atomically. */
+export interface BatchExecuteRequest {
+  calls: BatchContractCall[];
+  signerKey: string;
+}
+
+/** Per-call result returned by BatchClient. */
+export interface BatchCallResult {
+  index: number;
+  success: boolean;
+  returnValue?: unknown;
+  error?: string;
+}
+
+/** Result of a batch execution. */
+export interface BatchExecuteResult {
+  transactionHash: string;
+  status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
+  results: BatchCallResult[];
+  ledger?: number;
+}
+
+/** Request to upgrade an already-deployed contract. */
+export interface ContractUpgradeRequest {
+  target: ContractTarget;
+  /** 32-byte WASM hash encoded as 64 hex chars or base64. */
+  newWasmHash: string;
+  adminKey: string;
+}
+
+/** Result of a contract upgrade. */
+export interface ContractUpgradeResult {
+  contractId: string;
+  transactionHash: string;
+  status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
+  ledger?: number;
+}
+
 export interface DeploymentOptions {
   network: "testnet" | "mainnet";
   adminKey: string;
@@ -431,4 +551,30 @@ export interface PaginationOptions {
    * Must be between 1 and 100 (inclusive). Defaults to 20.
    */
   limit?: number;
+}
+
+/** Options for `BeneficiaryClient.searchBeneficiaries`. */
+export interface BeneficiarySearchOptions extends PaginationOptions {
+  /** Free-text search across name / location (max 200 chars). */
+  search?: string;
+  /** Restrict results to a location substring. */
+  locationFilter?: string;
+  /** When true (default), only active beneficiaries are returned. */
+  activeOnly?: boolean;
+  /** Minimum trust score (0–100). */
+  minTrustScore?: number;
+}
+
+/** Options for `BeneficiaryClient.searchFunds`. */
+export interface FundSearchOptions {
+  /** Free-text search across name / description (max 200 chars). */
+  search?: string;
+  /** Restrict to a disaster type. */
+  disasterType?: string;
+  /** When true, only active funds are returned. */
+  activeOnly?: boolean;
+  /** Lower bound (unix seconds); 0 means unbounded. */
+  createdAfter?: number;
+  /** Upper bound (unix seconds); 0 means unbounded. */
+  createdBefore?: number;
 }
