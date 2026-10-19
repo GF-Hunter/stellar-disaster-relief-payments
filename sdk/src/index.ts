@@ -1,5 +1,5 @@
 // Export all clients
-export { AidClient } from './aidClient';
+export { AidClient, MAX_BATCH_SIZE, MIN_BATCH_SIZE } from './aidClient';
 export { CostEstimationClient } from './costEstimation';
 export type { CostEstimate, CostEstimationOptions, ContractInteractionType } from './costEstimation';
 export { estimateContractCost, estimateMultipleContractCosts, estimateTotalCost } from './costEstimation';

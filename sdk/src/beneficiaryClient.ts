@@ -1,5 +1,5 @@
 import {
-  Server,
+  SorobanRpc,
   TransactionBuilder,
   Keypair,
   Contract,
@@ -27,6 +27,10 @@ import {
   ValidationError,
   NetworkError,
 } from './errors';
+import { ReadCache } from './readCache';
+import { withRetry } from './retry';
+import { validateAddress } from './validation';
+import { OfflineEnvelope, OfflineSigner } from './offlineSigner';
 
 /**
  * Default page size for paginated beneficiary listings.
@@ -41,8 +45,8 @@ export const DEFAULT_BENEFICIARY_PAGE_SIZE = 20;
 export const MAX_BENEFICIARY_PAGE_SIZE = 100;
 
 export class BeneficiaryClient {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: NetworkConfig;
   readonly cache: ReadCache;
 
@@ -323,7 +327,13 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Generate recovery codes for offline access
+   * Generate recovery codes for offline access.
+   *
+   * **Demo-grade only.** The generated value is a deterministic SHA-256 of the
+   * beneficiary ID, index, and timestamp. It does not match the contract's
+   * recovery-code hash/argument format, and anyone who knows the beneficiary ID
+   * can derive the contract-side value. See `docs/offline-flows.md` (known
+   * gaps) before using this for account recovery.
    */
   generateRecoveryCodes(beneficiaryId: string): string[] {
     const codes: string[] = [];
@@ -386,7 +396,13 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Generate QR code for beneficiary identification
+   * Generate QR code for beneficiary identification.
+   *
+   * The payload is unsigned JSON containing the beneficiary ID, name, disaster
+   * ID, trust score, timestamp, and verification-factor metadata. It has no
+   * expiry and contains PII; treat it as a visual identity aid, not a bearer
+   * credential. See `docs/offline-flows.md` for the threat model and the
+   * planned signature/revocation work.
    */
   generateBeneficiaryQRCode(beneficiaryId: string, profile: BeneficiaryProfile): string {
     const qrData = {
@@ -406,7 +422,11 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Validate beneficiary QR code
+   * Validate beneficiary QR code.
+   *
+   * Only checks the payload type and that the beneficiary currently exists. It
+   * does not verify a signature, freshness, or revocation, so a stale or
+   * copied QR still passes. See `docs/offline-flows.md`.
    */
   async validateBeneficiaryQRCode(qrCodeData: string): Promise<boolean> {
     try {
@@ -425,7 +445,12 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Create USSD session for feature phone users
+   * Create USSD session for feature phone users.
+   *
+   * This is a client-side simulator: the session ID is derived locally and
+   * there is no server-side session, PIN/OTP, rate limit, or telco gateway.
+   * Do not present it as a production USSD channel. See
+   * `docs/offline-flows.md`.
    */
   createUSSDSession(phoneNumber: string): {
     sessionId: string;
@@ -440,7 +465,10 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Process USSD input
+   * Process USSD input.
+   *
+   * Advances the local demo state machine. No authentication, replay checks, or
+   * rate limiting are performed. See `docs/offline-flows.md`.
    */
   processUSSDInput(
     sessionId: string,

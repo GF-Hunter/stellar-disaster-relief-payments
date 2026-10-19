@@ -1,5 +1,5 @@
 import {
-  Server,
+  SorobanRpc,
   TransactionBuilder,
   Keypair,
   Contract,
@@ -7,6 +7,9 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+const { Server } = SorobanRpc;
+type Server = SorobanRpc.Server;
+
 import {
   Merchant,
   Transaction,
@@ -32,8 +35,8 @@ export const DEFAULT_MERCHANT_PAGE_SIZE = 20;
 export const MAX_MERCHANT_PAGE_SIZE = 100;
 
 export class MerchantClient {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: NetworkConfig;
   readonly cache: ReadCache;
 
@@ -675,8 +678,9 @@ export class MerchantClient {
       )
       .setTimeout(0)
       .build();
-    return OfflineSigner.serialize(tx);
+    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
   }
+
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':

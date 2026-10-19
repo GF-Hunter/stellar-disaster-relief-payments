@@ -379,6 +379,86 @@ mod aid_registry_tests {
         let active_triggers = client.get_fund_triggers(&str(&env, "fund_dt"));
         assert_eq!(active_triggers.len(), 0);
     }
+
+    #[test]
+    fn test_submit_batch_accepts_max_size() {
+        let env = make_env();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let triggers = Vec::from_array(&env, [approver.clone()]);
+
+        client.create_fund(
+            &admin,
+            &str(&env, "fund_batch_max"),
+            &str(&env, "Batch Max Fund"),
+            &str(&env, "Boundary test"),
+            &u256(1_000_000),
+            &str(&env, "flood"),
+            &str(&env, "Zone Batch"),
+            &9_999_999_999u64,
+            &triggers,
+            &1u32,
+        );
+
+        let mut entries = Vec::new(&env);
+        for _ in 0..100u32 {
+            entries.push_back((
+                Address::generate(&env),
+                u256(1),
+                str(&env, "food"),
+            ));
+        }
+
+        let approvers = Vec::from_array(&env, [approver]);
+        let ids = client.submit_batch_disbursement(
+            &admin,
+            &str(&env, "fund_batch_max"),
+            &entries,
+            &approvers,
+        );
+        assert_eq!(ids.len(), 100);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_submit_batch_rejects_oversized_batch() {
+        let env = make_env();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let triggers = Vec::from_array(&env, [approver.clone()]);
+
+        client.create_fund(
+            &admin,
+            &str(&env, "fund_batch_over"),
+            &str(&env, "Batch Over Fund"),
+            &str(&env, "Boundary test"),
+            &u256(1_000_000),
+            &str(&env, "flood"),
+            &str(&env, "Zone Batch"),
+            &9_999_999_999u64,
+            &triggers,
+            &1u32,
+        );
+
+        let mut entries = Vec::new(&env);
+        for _ in 0..101u32 {
+            entries.push_back((
+                Address::generate(&env),
+                u256(1),
+                str(&env, "food"),
+            ));
+        }
+
+        let approvers = Vec::from_array(&env, [approver]);
+        client.submit_batch_disbursement(
+            &admin,
+            &str(&env, "fund_batch_over"),
+            &entries,
+            &approvers,
+        );
+    }
 }
 
 // ─── BeneficiaryManager Tests ────────────────────────────────────────────────

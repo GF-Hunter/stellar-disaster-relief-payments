@@ -54,6 +54,8 @@ export interface Location {
   city: string;
   country: string;
   postalCode: string;
+  facilityName?: string;
+  contactPerson?: string;
 }
 
 /** Offset pagination options for merchant listing endpoints. */
@@ -153,6 +155,13 @@ export interface DisbursementRecord {
   approvedBy: string[];
   transactionHash: string;
 }
+
+/**
+ * Maximum number of operations in one batch transaction and entries in one
+ * batch disbursement. Matches Stellar's 100-operation limit and the on-chain
+ * `MAX_BATCH_SIZE` in `src/aid_registry.rs`.
+ */
+export const BATCH_MAX_SIZE = 100;
 
 /** A single entry within a batch disbursement request */
 export interface BatchDisbursementEntry {
@@ -339,6 +348,57 @@ export interface NetworkConfig {
   };
   /** Optional logging configuration. Defaults to level='info', destination='console'. */
   logging?: import('./logger').LoggingConfig;
+}
+
+/** Contract slots that can be targeted by batch/upgrade clients. */
+export type ContractTarget = keyof NetworkConfig['contractIds'];
+
+/** Maximum number of contract calls that can be packed into one Stellar transaction. */
+export const BATCH_MAX_SIZE = 100;
+
+/** A single contract invocation within a batch. */
+export interface BatchContractCall {
+  contractTarget: ContractTarget;
+  method: string;
+  args: any[];
+}
+
+/** Request to execute multiple contract calls atomically. */
+export interface BatchExecuteRequest {
+  calls: BatchContractCall[];
+  signerKey: string;
+}
+
+/** Per-call result returned by BatchClient. */
+export interface BatchCallResult {
+  index: number;
+  success: boolean;
+  returnValue?: unknown;
+  error?: string;
+}
+
+/** Result of a batch execution. */
+export interface BatchExecuteResult {
+  transactionHash: string;
+  status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
+  results: BatchCallResult[];
+  ledger?: number;
+}
+
+/** Request to upgrade an already-deployed contract. */
+export interface ContractUpgradeRequest {
+  target: ContractTarget;
+  /** 32-byte WASM hash encoded as 64 hex chars or base64. */
+  newWasmHash: string;
+  adminKey: string;
+}
+
+/** Result of a contract upgrade. */
+export interface ContractUpgradeResult {
+  contractId: string;
+  transactionHash: string;
+  status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
+  ledger?: number;
 }
 
 export interface DeploymentOptions {

@@ -16,6 +16,13 @@ pub const FUND_STATUS_ARCHIVED: &str = "archived";
 
 const SECONDS_PER_MONTH: u64 = 2_592_000; // 30 days
 
+/// Maximum number of entries accepted by `submit_batch_disbursement`.
+///
+/// Keeps a single invocation within Soroban CPU/memory and ledger-entry
+/// limits. Clients must split larger requests into several transactions; every
+/// batch is atomic, so a partial batch is never persisted.
+pub const MAX_BATCH_SIZE: u32 = 100;
+
 /// Maximum age of oracle data accepted at submission time (1 hour).
 pub const ORACLE_STALENESS_SECS: u64 = 3_600;
 
@@ -959,7 +966,9 @@ impl AidRegistry {
     /// Submit multiple disbursements atomically in a single transaction.
     ///
     /// All entries must pass validation; if any entry fails the entire
-    /// transaction is reverted (Soroban panic semantics).
+    /// transaction is reverted (Soroban panic semantics). A batch may contain
+    /// at most [`MAX_BATCH_SIZE`] entries; larger workloads must be split into
+    /// multiple atomic batches by the caller.
     ///
     /// # Parameters
     /// - `requester`  – address that must be authorised to submit
@@ -981,6 +990,11 @@ impl AidRegistry {
         // ── Validate batch is non-empty ──────────────────────────────────────
         if entries.is_empty() {
             panic_with_error!(&env, "Batch must contain at least one entry");
+        }
+
+        // ── Enforce the maximum batch size ──────────────────────────────────
+        if entries.len() > MAX_BATCH_SIZE {
+            panic_with_error!(&env, "Batch exceeds maximum of 100 entries");
         }
 
         // ── Load fund ────────────────────────────────────────────────────────
