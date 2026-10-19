@@ -1,3 +1,9 @@
+//! Merchant onboarding, online/offline payments, QR/USSD helpers, and
+//! settlement.
+//!
+//! Offline capture/sync guarantees, reconciliation steps, expiry, and known
+//! abuse-resistance gaps are documented in `docs/offline-flows.md`.
+
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
 use crate::geo::{GeoPoint, GeoBounds, GeoFormatter};
 
@@ -22,6 +28,27 @@ pub const PAYMENT_USSD: u32 = 1;
 pub const PAYMENT_NFC: u32 = 2;
 pub const PAYMENT_OFFLINE: u32 = 3;
 pub const PAYMENT_ONLINE: u32 = 4;
+
+/// Default page size for merchant listing endpoints.
+pub const DEFAULT_MERCHANT_PAGE_SIZE: u32 = 20;
+
+/// Maximum page size accepted by merchant listing endpoints (inclusive).
+pub const MAX_MERCHANT_PAGE_SIZE: u32 = 100;
+
+/// Clamp a caller-supplied page size to the supported range.
+///
+/// A `limit` of `0` selects the default; values above the maximum are capped.
+/// This mirrors the beneficiary pagination contract, where the bound is
+/// enforced server-side so a single call cannot request an unbounded scan.
+fn clamp_page_size(limit: u32) -> u32 {
+    if limit == 0 {
+        DEFAULT_MERCHANT_PAGE_SIZE
+    } else if limit > MAX_MERCHANT_PAGE_SIZE {
+        MAX_MERCHANT_PAGE_SIZE
+    } else {
+        limit
+    }
+}
 
 #[contract]
 pub struct MerchantNetwork;
@@ -395,7 +422,12 @@ impl MerchantNetwork {
         transaction_id
     }
     
-    /// Process offline transaction (batched and synced when connectivity returns)
+    /// Process offline transaction (batched and synced when connectivity returns).
+    ///
+    /// This only stores the record for later sync. It does **not** verify the
+    /// supplied `signature`, enforce merchant daily/monthly limits, or apply an
+    /// expiry. Reconcile against beneficiary receipts before settlement; see
+    /// `docs/offline-flows.md`.
     pub fn process_offline_payment(
         env: Env,
         merchant_id: String,
@@ -446,7 +478,12 @@ impl MerchantNetwork {
         transaction_id
     }
     
-    /// Sync offline transactions (when connectivity returns)
+    /// Sync offline transactions (when connectivity returns).
+    ///
+    /// Idempotent per transaction ID: `is_synced` prevents double-counting.
+    /// The caller is not authenticated and the record's `merchant_id` is not
+    /// checked against the argument; see `docs/offline-flows.md` before relying
+    /// on this for settlement.
     pub fn sync_offline_transactions(
         env: Env,
         merchant_id: String,
@@ -703,7 +740,10 @@ impl MerchantNetwork {
         }
     }
     
-    /// Generate static QR code for shop
+    /// Generate static QR code for shop.
+    ///
+    /// The payload is unsigned public directory data (`merchant_id|category|lat|lng|name`)
+    /// and carries no expiry. It is not a payment authorisation.
     pub fn generate_shop_qr(env: Env, merchant_id: String) -> String {
         let merchants_key = Symbol::new(&env, "merchants");
         let merchants: Map<String, Merchant> = env.storage().instance()
@@ -725,7 +765,11 @@ impl MerchantNetwork {
         }
     }
     
-    /// Generate dynamic QR code for transaction
+    /// Generate dynamic QR code for transaction.
+    ///
+    /// Includes the merchant, amount, transfer code, and ledger timestamp. The
+    /// timestamp is informational only; there is no signature or enforced
+    /// expiry in this payload.
     pub fn generate_transaction_qr(
         env: Env,
         merchant_id: String,
@@ -741,7 +785,11 @@ impl MerchantNetwork {
         )
     }
     
-    /// Parse USSD code: *merchant_code*amount#
+    /// Parse USSD code: `*merchant_code*amount#`.
+    ///
+    /// This is a string-splitting helper used by the demo flow. It performs no
+    /// authentication, replay protection, rate limiting, or business validation
+    /// (malformed amounts become zero). See `docs/offline-flows.md`.
     pub fn parse_ussd_code(env: Env, code: String) -> (String, U256) {
         // Simplified parsing - in production use proper parsing
         // Format: *merchant_code*amount#
@@ -797,7 +845,9 @@ impl MerchantNetwork {
         nearby_merchants
     }
     
-    /// Find merchants by category
+    /// Find merchants by category (unbounded).
+    ///
+    /// Prefer [`find_merchants_by_category_paginated`] for production clients.
     pub fn find_merchants_by_category(
         env: Env,
         category: u32,

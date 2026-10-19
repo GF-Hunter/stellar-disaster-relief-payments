@@ -1,5 +1,5 @@
 import {
-  Server,
+  SorobanRpc,
   TransactionBuilder,
   Networks,
   Keypair,
@@ -20,10 +20,14 @@ import {
   NetworkError,
   ValidationError,
 } from './errors';
+import { ReadCache } from './readCache';
+import { OfflineSigner, OfflineEnvelope } from './offlineSigner';
+import { withRetry } from './retry';
+import { NetworkConfig } from './types';
 
 export class TransferClient {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: NetworkConfig;
   readonly cache: ReadCache;
 

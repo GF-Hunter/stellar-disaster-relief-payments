@@ -1,7 +1,6 @@
 import {
-  Server,
+  SorobanRpc,
   TransactionBuilder,
-  Networks,
   Keypair,
   Contract,
   Address,
@@ -17,17 +16,39 @@ import {
   MerchantOnboardingRequest,
   PaginatedResponse,
   PaginationOptions,
+  NetworkConfig,
+  EmergencyFund,
+  BeneficiarySearchOptions,
+  FundSearchOptions,
 } from './types';
-import { createHash } from 'crypto-js';
+import { OfflineEnvelope, OfflineSigner } from './offlineSigner';
+import { ReadCache } from './readCache';
+import { createHash } from 'crypto';
 import {
   BeneficiaryNotFoundError,
   ValidationError,
   NetworkError,
 } from './errors';
+import { ReadCache } from './readCache';
+import { withRetry } from './retry';
+import { validateAddress } from './validation';
+import { OfflineEnvelope, OfflineSigner } from './offlineSigner';
+
+/**
+ * Default page size for paginated beneficiary listings.
+ *
+ * Large disaster deployments must not rely on the unbounded
+ * `listBeneficiariesByDisaster` scan; use `listBeneficiariesPaginated` (or the
+ * paginated search helpers) instead.
+ */
+export const DEFAULT_BENEFICIARY_PAGE_SIZE = 20;
+
+/** Maximum page size accepted by the beneficiary contract (inclusive). */
+export const MAX_BENEFICIARY_PAGE_SIZE = 100;
 
 export class BeneficiaryClient {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: NetworkConfig;
   readonly cache: ReadCache;
 
@@ -173,7 +194,13 @@ export class BeneficiaryClient {
   }
 
   /**
-   * List beneficiaries by disaster
+   * List beneficiaries by disaster (unbounded scan).
+   *
+   * @deprecated Prefer {@link listBeneficiariesPaginated} or
+   * {@link searchBeneficiaries}. This method loads every beneficiary for the
+   * disaster into memory and is only safe for small datasets. A full disaster
+   * deployment can contain thousands of records, so it must not be used as the
+   * default listing path.
    */
   async listBeneficiariesByDisaster(disasterId: string): Promise<BeneficiaryProfile[]> {
     return this.cache.get(`beneficiary:disaster:${disasterId}`, async () => {
@@ -207,11 +234,16 @@ export class BeneficiaryClient {
     disasterId: string,
     options: PaginationOptions = {}
   ): Promise<PaginatedResponse<BeneficiaryProfile>> {
-    const { cursor = '', limit = 20 } = options;
+    const { cursor = '', limit = DEFAULT_BENEFICIARY_PAGE_SIZE } = options;
 
     // Input validation
-    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new Error('limit must be an integer between 1 and 100');
+    if (
+      typeof limit !== 'number' ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > MAX_BENEFICIARY_PAGE_SIZE
+    ) {
+      throw new Error(`limit must be an integer between 1 and ${MAX_BENEFICIARY_PAGE_SIZE}`);
     }
     if (cursor !== '' && typeof cursor !== 'string') {
       throw new Error('cursor must be a non-empty string or omitted');
@@ -297,7 +329,13 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Generate recovery codes for offline access
+   * Generate recovery codes for offline access.
+   *
+   * **Demo-grade only.** The generated value is a deterministic SHA-256 of the
+   * beneficiary ID, index, and timestamp. It does not match the contract's
+   * recovery-code hash/argument format, and anyone who knows the beneficiary ID
+   * can derive the contract-side value. See `docs/offline-flows.md` (known
+   * gaps) before using this for account recovery.
    */
   generateRecoveryCodes(beneficiaryId: string): string[] {
     const codes: string[] = [];
@@ -360,7 +398,13 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Generate QR code for beneficiary identification
+   * Generate QR code for beneficiary identification.
+   *
+   * The payload is unsigned JSON containing the beneficiary ID, name, disaster
+   * ID, trust score, timestamp, and verification-factor metadata. It has no
+   * expiry and contains PII; treat it as a visual identity aid, not a bearer
+   * credential. See `docs/offline-flows.md` for the threat model and the
+   * planned signature/revocation work.
    */
   generateBeneficiaryQRCode(beneficiaryId: string, profile: BeneficiaryProfile): string {
     const qrData = {
@@ -380,7 +424,11 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Validate beneficiary QR code
+   * Validate beneficiary QR code.
+   *
+   * Only checks the payload type and that the beneficiary currently exists. It
+   * does not verify a signature, freshness, or revocation, so a stale or
+   * copied QR still passes. See `docs/offline-flows.md`.
    */
   async validateBeneficiaryQRCode(qrCodeData: string): Promise<boolean> {
     try {
@@ -399,7 +447,12 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Create USSD session for feature phone users
+   * Create USSD session for feature phone users.
+   *
+   * This is a client-side simulator: the session ID is derived locally and
+   * there is no server-side session, PIN/OTP, rate limit, or telco gateway.
+   * Do not present it as a production USSD channel. See
+   * `docs/offline-flows.md`.
    */
   createUSSDSession(phoneNumber: string): {
     sessionId: string;
@@ -414,7 +467,10 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Process USSD input
+   * Process USSD input.
+   *
+   * Advances the local demo state machine. No authentication, replay checks, or
+   * rate limiting are performed. See `docs/offline-flows.md`.
    */
   processUSSDInput(
     sessionId: string,
@@ -616,15 +672,15 @@ export class BeneficiaryClient {
   ): Promise<PaginatedResponse<BeneficiaryProfile>> {
     const {
       cursor = '',
-      limit = 20,
+      limit = DEFAULT_BENEFICIARY_PAGE_SIZE,
       search = '',
       locationFilter = '',
       activeOnly = true,
       minTrustScore = 0,
     } = options;
 
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new Error('limit must be an integer between 1 and 100');
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BENEFICIARY_PAGE_SIZE) {
+      throw new Error(`limit must be an integer between 1 and ${MAX_BENEFICIARY_PAGE_SIZE}`);
     }
     if (!Number.isInteger(minTrustScore) || minTrustScore < 0 || minTrustScore > 100) {
       throw new Error('minTrustScore must be an integer between 0 and 100');
