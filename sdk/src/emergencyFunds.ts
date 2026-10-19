@@ -10,7 +10,6 @@ import {
   Keypair,
   BASE_FEE,
 } from 'stellar-sdk';
-import axios from 'axios';
 import {
   FundCreationError,
   TriggerExecutionError,
