@@ -1,45 +1,36 @@
 import { useEffect, useRef } from 'react';
-import type { RefObject } from 'react';
 
-/**
- * Selector for elements that can receive keyboard focus inside a dialog.
- * Disabled controls and elements explicitly removed from the tab order are
- * excluded.
- */
 const FOCUSABLE_SELECTOR = [
   'a[href]',
   'button:not([disabled])',
-  'textarea:not([disabled])',
-  'input:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
   'select:not([disabled])',
+  'textarea:not([disabled])',
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
+export interface FocusTrapOptions {
+  isOpen: boolean;
+  onClose?: () => void;
+}
+
 /**
- * Trap keyboard focus inside a dialog while it is open.
+ * Keeps keyboard focus inside a dialog while it is open.
  *
- * Behaviour:
- * - moves focus to the first focusable control (or the container) on open;
- * - cycles Tab / Shift+Tab within the container;
- * - calls `onEscape` when Escape is pressed;
- * - restores focus to the previously focused element on close.
- *
- * The hook is intentionally dependency-free so it can be reused by all
- * confirmation and detail modals. `onEscape` is read through a ref so passing
- * an inline callback does not re-run the effect and steal focus on re-render.
- *
- * @param isOpen   Whether the dialog is currently mounted.
- * @param onEscape Callback invoked when the user presses Escape.
- * @returns A ref to attach to the dialog container (`tabIndex={-1}`).
+ * - Moves focus to `[data-autofocus]` if present, otherwise the first
+ *   focusable element (or the container itself).
+ * - Cycles Tab / Shift+Tab within the dialog.
+ * - Calls `onClose` when Escape is pressed.
+ * - Restores focus to the element that opened the dialog on close/unmount.
  */
-export function useFocusTrap<T extends HTMLElement>(
-  isOpen: boolean,
-  onEscape: () => void
-): RefObject<T> {
+export function useFocusTrap<T extends HTMLElement = HTMLDivElement>({
+  isOpen,
+  onClose,
+}: FocusTrapOptions) {
   const containerRef = useRef<T>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
-  const onEscapeRef = useRef(onEscape);
-  onEscapeRef.current = onEscape;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -51,43 +42,38 @@ export function useFocusTrap<T extends HTMLElement>(
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
     const getFocusable = (): HTMLElement[] =>
-      Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-        (element) =>
-          !element.hasAttribute('disabled') &&
-          element.getAttribute('aria-hidden') !== 'true'
-      );
+      Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
 
-    const initial = getFocusable()[0] ?? container;
-    if (initial === container && !container.hasAttribute('tabindex')) {
-      container.setAttribute('tabindex', '-1');
-    }
-    initial.focus();
+    const initialFocus =
+      container.querySelector<HTMLElement>('[data-autofocus]') ?? getFocusable()[0] ?? container;
+    initialFocus.focus();
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onEscapeRef.current();
+        onCloseRef.current?.();
         return;
       }
 
       if (event.key !== 'Tab') return;
 
-      const items = getFocusable();
-      if (items.length === 0) {
+      const focusable = getFocusable();
+      if (focusable.length === 0) {
         event.preventDefault();
         container.focus();
         return;
       }
 
-      const first = items[0];
-      const last = items[items.length - 1];
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
       const active = document.activeElement;
-      const focusIsOutside = !(active instanceof Node) || !container.contains(active);
 
-      if (event.shiftKey && (active === first || focusIsOutside)) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (active === last || focusIsOutside)) {
+      if (event.shiftKey) {
+        if (active === first || !container.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !container.contains(active)) {
         event.preventDefault();
         first.focus();
       }
@@ -97,9 +83,9 @@ export function useFocusTrap<T extends HTMLElement>(
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      const previouslyFocused = previouslyFocusedRef.current;
-      if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
-        previouslyFocused.focus();
+      const previous = previouslyFocusedRef.current;
+      if (previous && previous.isConnected) {
+        previous.focus();
       }
     };
   }, [isOpen]);

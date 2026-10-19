@@ -46,6 +46,13 @@ The Stellar Disaster Relief Platform leverages Stellar's fast, low-cost blockcha
    - Medical supply chain management
    - Merchant network onboarding
 
+### Architecture notes
+
+- [Storage classes and retention](./docs/storage-architecture.md) — why data uses
+  instance, persistent, or temporary storage, and which records must be durable.
+- [Shared contract patterns](./docs/contract-patterns.md) — canonical
+  deduplication, audit recording, and pagination patterns across contracts.
+
 ## 🛠️ Installation & Setup
 
 ### Prerequisites

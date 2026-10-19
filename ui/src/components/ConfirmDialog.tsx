@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useId } from 'react';
 import { useFocusTrap } from '../accessibility/useFocusTrap';
 
 interface ConfirmDialogProps {
@@ -22,9 +22,9 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   onConfirm,
   onCancel,
 }) => {
-  // Trap focus while open; Escape behaves like Cancel. The hook is called
-  // before the early return so hook order stays stable.
-  const dialogRef = useFocusTrap<HTMLDivElement>(isOpen, onCancel);
+  const titleId = useId();
+  const messageId = useId();
+  const dialogRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose: onCancel });
 
   if (!isOpen) return null;
 
@@ -59,29 +59,27 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50"
-      role="presentation"
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50">
       <div
         ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="confirm-dialog-title"
-        aria-describedby="confirm-dialog-message"
-        tabIndex={-1}
-        className="bg-white rounded-lg shadow-xl max-w-md w-full p-6"
+        aria-labelledby={titleId}
+        aria-describedby={messageId}
+        className="bg-white rounded-lg shadow-xl max-w-md w-full p-6 outline-none"
       >
         <div className="flex flex-col items-center text-center">
           {iconStyles[variant]}
-          <h2 id="confirm-dialog-title" className="text-lg font-semibold text-gray-900 mb-2">
+          <h2 id={titleId} className="text-lg font-semibold text-gray-900 mb-2">
             {title}
           </h2>
-          <p id="confirm-dialog-message" className="text-gray-600 mb-6">{message}</p>
+          <p id={messageId} className="text-gray-600 mb-6">{message}</p>
         </div>
         <div className="flex space-x-3 justify-end">
           <button
             type="button"
+            data-autofocus
             onClick={onCancel}
             className="px-4 py-2 rounded bg-gray-100 text-gray-700 hover:bg-gray-200 font-medium"
           >
