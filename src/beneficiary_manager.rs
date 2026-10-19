@@ -1,3 +1,9 @@
+//! Beneficiary identity, recovery-code, and offline access restoration.
+//!
+//! Operational guarantees, expiry rules, reconciliation steps, and known
+//! abuse-resistance gaps (including the current deterministic recovery-code
+//! format) are documented in `docs/offline-flows.md`.
+
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64, BytesN};
 
 #[contract]
@@ -142,7 +148,11 @@ impl BeneficiaryManager {
         Self::generate_recovery_codes(&env, beneficiary_id);
     }
 
-    /// Generate recovery codes for offline access restoration
+    /// Generate recovery codes for offline access restoration.
+    ///
+    /// Three single-use codes are stored with 30/60/90-day expiry. The current
+    /// hash is deterministic from the beneficiary ID and index, so this is not
+    /// a production-grade secret; see `docs/offline-flows.md` (known gaps).
     fn generate_recovery_codes(env: &Env, beneficiary_id: String) {
         let recovery_key = Symbol::new(env, "recovery_codes");
         let mut recovery_codes: Map<String, Vec<RecoveryCode>> = env.storage().instance()
@@ -234,7 +244,11 @@ impl BeneficiaryManager {
         }
     }
 
-    /// Restore access using recovery code
+    /// Restore access using a recovery code.
+    ///
+    /// The code must be unused and unexpired; it is marked used before the
+    /// wallet address is changed. See `docs/offline-flows.md` for the current
+    /// client/contract format mismatch and the planned random-code migration.
     pub fn restore_access(
         env: Env,
         beneficiary_id: String,
@@ -249,32 +263,38 @@ impl BeneficiaryManager {
         let current_time = env.ledger().timestamp();
         
         if let Some(mut codes) = recovery_codes.get(beneficiary_id.clone()) {
-            for mut code in codes.iter() {
-                if code.code_hash == recovery_code 
-                    && !code.is_used 
-                    && current_time <= code.expires_at {
-                    
-                    // Mark code as used
-                    code.is_used = true;
-                    
+            for i in 0..codes.len() {
+                let code = codes.get(i).unwrap();
+                if code.code_hash == recovery_code
+                    && !code.is_used
+                    && current_time <= code.expires_at
+                {
+                    // Mark the code as used and persist the updated list so the
+                    // same code cannot be replayed.
+                    let mut used_code = code;
+                    used_code.is_used = true;
+                    codes.set(i, used_code);
+                    recovery_codes.set(beneficiary_id.clone(), codes);
+                    env.storage().instance().set(&recovery_key, &recovery_codes);
+
                     // Update beneficiary wallet address
                     let beneficiaries_key = Symbol::new(&env, "beneficiaries");
                     let mut beneficiaries: Map<String, BeneficiaryProfile> = env.storage().instance()
                         .get(&beneficiaries_key)
                         .unwrap_or(Map::new(&env));
-                    
+
                     if let Some(mut profile) = beneficiaries.get(beneficiary_id.clone()) {
                         profile.wallet_address = new_wallet;
                         profile.last_verified = current_time;
                         beneficiaries.set(beneficiary_id, profile);
                         env.storage().instance().set(&beneficiaries_key, &beneficiaries);
                     }
-                    
+
                     return true;
                 }
             }
         }
-        
+
         false
     }
 

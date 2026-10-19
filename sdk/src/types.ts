@@ -96,6 +96,13 @@ export interface DisbursementRecord {
   transactionHash: string;
 }
 
+/**
+ * Maximum number of operations in one batch transaction and entries in one
+ * batch disbursement. Matches Stellar's 100-operation limit and the on-chain
+ * `MAX_BATCH_SIZE` in `src/aid_registry.rs`.
+ */
+export const BATCH_MAX_SIZE = 100;
+
 /** A single entry within a batch disbursement request */
 export interface BatchDisbursementEntry {
   beneficiary: string;
