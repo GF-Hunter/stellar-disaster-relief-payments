@@ -10,6 +10,50 @@ import {
   ConditionalTransfer,
   NetworkConfig,
 } from '../../sdk/src/types';
+import { formatAmount, parseAmount, percentageOf, sumAmounts } from '../format/amounts';
+
+// ── Query configuration (#202) ───────────────────────────────────────────────
+
+/**
+ * The disaster id used when the caller does not supply one. These are sample
+ * ids, not real records — see {@link Dashboard}'s sample-data notice.
+ */
+export const SAMPLE_DISASTER_ID = 'sample_disaster_001';
+
+/** The beneficiary id used when the caller does not supply one. */
+export const SAMPLE_BENEFICIARY_ID = 'sample_beneficiary_001';
+
+/**
+ * Default merchant search radius in km.
+ *
+ * #202 — this was previously `99999`, which spans the planet and silently
+ * turned "verified merchants" into "every merchant on the network". A radius
+ * this large is indistinguishable from no filter while *looking* like a
+ * deliberate one, so the default is now a plausible single-response area and
+ * the centre is something a responder would recognise.
+ */
+export const DEFAULT_MERCHANT_RADIUS_KM = 50;
+
+/** Default search centre (Gulf of Guinea — open ocean, deliberately no-op). */
+export const DEFAULT_MERCHANT_CENTER = { latitude: 0, longitude: 0 } as const;
+
+/**
+ * Which slices of data the dashboard queries.
+ *
+ * #202 — every one of these was hardcoded to a sample id or a planet-sized
+ * radius, so the dashboard always showed the same placeholder view no matter
+ * what was deployed. Supplying this prop makes the queries real.
+ */
+export interface DashboardQuery {
+  /** Disaster whose beneficiaries are counted. */
+  disasterId?: string;
+  /** Beneficiary whose transfers are counted. */
+  beneficiaryId?: string;
+  /** Centre point for the merchant search. */
+  merchantCenter?: { latitude: number; longitude: number };
+  /** Merchant search radius in km. */
+  merchantRadiusKm?: number;
+}
 
 interface DashboardProps {
   aidClient: AidClient;
@@ -17,21 +61,50 @@ interface DashboardProps {
   merchantClient: MerchantClient;
   transferClient: TransferClient;
   config: NetworkConfig;
+  /** #202 — which data to query. Falls back to documented sample defaults. */
+  query?: DashboardQuery;
+}
+
+/** Fully-resolved query, with the fallback source of each value recorded. */
+interface ResolvedQuery {
+  disasterId: string;
+  beneficiaryId: string;
+  merchantCenter: { latitude: number; longitude: number };
+  merchantRadiusKm: number;
+  /** True when at least one value came from a sample default. */
+  usingSampleDefaults: boolean;
+}
+
+function resolveQuery(query?: DashboardQuery): ResolvedQuery {
+  const usingSampleDefaults =
+    query === undefined ||
+    query.disasterId === undefined ||
+    query.beneficiaryId === undefined;
+
+  return {
+    disasterId: query?.disasterId ?? SAMPLE_DISASTER_ID,
+    beneficiaryId: query?.beneficiaryId ?? SAMPLE_BENEFICIARY_ID,
+    merchantCenter: query?.merchantCenter ?? DEFAULT_MERCHANT_CENTER,
+    merchantRadiusKm: query?.merchantRadiusKm ?? DEFAULT_MERCHANT_RADIUS_KM,
+    usingSampleDefaults,
+  };
 }
 
 interface DashboardStats {
   totalFunds: number;
   activeFunds: number;
-  totalFundAmount: number;
-  releasedAmount: number;
+  totalFundAmount: bigint;
+  releasedAmount: bigint;
   totalBeneficiaries: number;
   activeBeneficiaries: number;
   totalMerchants: number;
   verifiedMerchants: number;
   totalTransfers: number;
   activeTransfers: number;
-  totalTransferAmount: number;
-  spentAmount: number;
+  totalTransferAmount: bigint;
+  spentAmount: bigint;
+  /** How many amount fields could not be parsed as integers. */
+  invalidAmountFields: number;
 }
 
 // ── Minimal SVG bar chart ──────────────────────────────────────────────────
@@ -153,11 +226,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
   beneficiaryClient,
   merchantClient,
   transferClient,
+  query,
 }) => {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [funds, setFunds] = useState<EmergencyFund[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const resolved = resolveQuery(query);
 
   useEffect(() => {
     loadDashboardData();
@@ -170,9 +246,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
       const [activeFunds, beneficiaries, merchants, transfers] = await Promise.allSettled([
         aidClient.listActiveFunds(),
-        beneficiaryClient.listBeneficiariesByDisaster('sample_disaster_001'),
-        merchantClient.findMerchantsByLocation(0, 0, 99999),
-        transferClient.listBeneficiaryTransfers('sample_beneficiary_001'),
+        beneficiaryClient.listBeneficiariesByDisaster(resolved.disasterId),
+        merchantClient.findMerchantsByLocation(
+          resolved.merchantCenter.latitude,
+          resolved.merchantCenter.longitude,
+          resolved.merchantRadiusKm
+        ),
+        transferClient.listBeneficiaryTransfers(resolved.beneficiaryId),
       ]);
 
       const fundsData: EmergencyFund[] = activeFunds.status === 'fulfilled' ? activeFunds.value : [];
@@ -182,24 +262,30 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
       setFunds(fundsData);
 
-      const totalFundAmount = fundsData.reduce((sum, f) => sum + parseInt(f.totalAmount || '0'), 0);
-      const releasedAmount = fundsData.reduce((sum, f) => sum + parseInt(f.releasedAmount || '0'), 0);
-      const totalTransferAmount = transfersData.reduce((sum, t) => sum + parseInt(t.amount || '0'), 0);
-      const spentAmount = transfersData.reduce((sum, t) => sum + parseInt(t.spentAmount || '0'), 0);
+      // #203 — sum in bigint and report how many fields were unreadable, so a
+      // malformed amount shows up as a warning rather than silently as $0.
+      const fundTotals = sumAmounts(fundsData.map((f) => f.totalAmount));
+      const releasedTotals = sumAmounts(fundsData.map((f) => f.releasedAmount));
+      const transferTotals = sumAmounts(transfersData.map((t) => t.amount));
+      const spentTotals = sumAmounts(transfersData.map((t) => t.spentAmount));
+
+      const invalidAmountFields =
+        fundTotals.invalid + releasedTotals.invalid + transferTotals.invalid + spentTotals.invalid;
 
       setStats({
         totalFunds: fundsData.length,
         activeFunds: fundsData.filter((f) => f.isActive).length,
-        totalFundAmount,
-        releasedAmount,
+        totalFundAmount: fundTotals.total,
+        releasedAmount: releasedTotals.total,
         totalBeneficiaries: beneficiariesData.length,
         activeBeneficiaries: beneficiariesData.filter((b) => b.isActive).length,
         totalMerchants: merchantsData.length,
         verifiedMerchants: merchantsData.filter((m) => m.isVerified).length,
         totalTransfers: transfersData.length,
         activeTransfers: transfersData.filter((t) => t.isActive).length,
-        totalTransferAmount,
-        spentAmount,
+        totalTransferAmount: transferTotals.total,
+        spentAmount: spentTotals.total,
+        invalidAmountFields,
       });
     } catch (err) {
       setError('Failed to load dashboard data. Some metrics may be unavailable.');
@@ -208,10 +294,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
   };
 
-  const formatAmount = (n: number) =>
-    new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
+  const pct = (part: bigint, whole: bigint) => percentageOf(part, whole);
 
-  const pct = (a: number, b: number) => (b === 0 ? 0 : Math.round((a / b) * 100));
+  /** Counts (not money) still arrive as `number`, so they need their own ratio. */
+  const countPct = (part: number, whole: number) =>
+    whole === 0 ? 0 : Math.min(100, Math.max(0, Math.round((part / whole) * 100)));
 
   if (loading) {
     return (
@@ -239,6 +326,27 @@ export const Dashboard: React.FC<DashboardProps> = ({
       {error && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-yellow-700 text-sm">
           {error}
+        </div>
+      )}
+
+      {/* #202 — surface loudly when the view is built from sample ids. */}
+      {resolved.usingSampleDefaults && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-amber-800 text-sm">
+          <strong className="font-semibold">Sample data.</strong> Beneficiary and transfer
+          figures are filtered by <code className="font-mono">{resolved.disasterId}</code> and{' '}
+          <code className="font-mono">{resolved.beneficiaryId}</code>, which are placeholders
+          rather than deployed records — pass the <code className="font-mono">query</code> prop to
+          point this dashboard at real ones. Merchant coverage is a {resolved.merchantRadiusKm} km
+          radius, not the whole network.
+        </div>
+      )}
+
+      {/* #203 — unreadable amounts are a data problem worth showing. */}
+      {stats && stats.invalidAmountFields > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
+          {stats.invalidAmountFields} amount{stats.invalidAmountFields === 1 ? '' : 's'} could not
+          be read as an integer and {stats.invalidAmountFields === 1 ? 'was' : 'were'} counted as
+          zero. Totals below may be understated.
         </div>
       )}
 
@@ -303,12 +411,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   label="Transfers Spent"
                 />
                 <DonutChart
-                  value={pct(stats.verifiedMerchants, stats.totalMerchants)}
+                  value={countPct(stats.verifiedMerchants, stats.totalMerchants)}
                   color="#8b5cf6"
                   label="Merchants Verified"
                 />
                 <DonutChart
-                  value={pct(stats.activeBeneficiaries, stats.totalBeneficiaries)}
+                  value={countPct(stats.activeBeneficiaries, stats.totalBeneficiaries)}
                   color="#10b981"
                   label="Beneficiaries Active"
                 />
@@ -342,11 +450,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   </thead>
                   <tbody>
                     {funds.map((fund) => {
-                      const total = parseInt(fund.totalAmount || '0');
-                      const released = parseInt(fund.releasedAmount || '0');
+                      const total = parseAmount(fund.totalAmount);
+                      const released = parseAmount(fund.releasedAmount);
                       const utilPct = pct(released, total);
+                      // #203 — a non-numeric expiresAt yields NaN, and
+                      // `NaN < anything` is false, which would have hidden the
+                      // "expiring soon" warning rather than showing it.
+                      const expiresInMs = fund.expiresAt - Date.now();
                       const isExpiringSoon =
-                        fund.expiresAt - Date.now() < 7 * 24 * 60 * 60 * 1000;
+                        Number.isFinite(expiresInMs) &&
+                        expiresInMs < 7 * 24 * 60 * 60 * 1000;
                       return (
                         <tr key={fund.id} className="border-b border-gray-100 hover:bg-gray-50">
                           <td className="py-2 pr-4">
