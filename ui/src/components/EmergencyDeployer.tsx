@@ -1,24 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { EmergencyFund, NetworkConfig } from '../../sdk/src/types';
-import { AidClient } from '../../sdk/src/aidClient';
-import { ErrorMessage, friendlyError } from './ErrorMessage';
+import React, { useState, useEffect } from 'react';
+import { AidClient, EmergencyFund, NetworkConfig } from '../../sdk/src/types';
+import { parseAmount, formatAmount as formatBigAmount } from '../format/amounts';
+import { parseExpiryInput } from '../validation/expiry';
 import { ConfirmDialog } from './ConfirmDialog';
-import { FormField } from './FormField';
+import { ErrorMessage, friendlyError } from './ErrorMessage';
 import { useNotifications } from './NotificationSystem';
-import {
-  useFormValidation,
-  type FieldRules,
-  compose,
-  disasterType as validateDisasterType,
-  futureDate,
-  identifier,
-  isInteger,
-  isPositiveNumber,
-  maxLength,
-  maxValue,
-  minValue,
-  required,
-} from '../validation';
 
 interface EmergencyDeployerProps {
   aidClient: AidClient;
@@ -26,100 +12,12 @@ interface EmergencyDeployerProps {
   adminKey: string;
 }
 
-type FundFields = {
+/** A fund QR payload held open in the modal. */
+interface FundQrPayload {
   fundId: string;
-  name: string;
-  description: string;
-  totalAmount: string;
-  disasterType: string;
-  geographicScope: string;
-  expiresAt: string;
-  requiredSignatures: string;
-};
-
-type RapidFields = {
-  disasterId: string;
-  disasterType: string;
-  affectedArea: string;
-  totalBudget: string;
-};
-
-type RapidFormState = RapidFields & {
-  categories: { name: string; percentage: number; description: string }[];
-};
-
-const fundRules: FieldRules<FundFields> = {
-  fundId: compose(required('Fund ID'), identifier('Fund ID')),
-  name: compose(required('Fund name'), maxLength(120, 'Fund name')),
-  description: compose(required('Description'), maxLength(500, 'Description')),
-  totalAmount: compose(required('Total amount'), isPositiveNumber('Total amount')),
-  disasterType: compose(required('Disaster type'), validateDisasterType),
-  geographicScope: compose(required('Geographic scope'), maxLength(160, 'Geographic scope')),
-  expiresAt: compose(required('Expiry date'), futureDate('Expiry date')),
-  requiredSignatures: compose(
-    required('Required signatures'),
-    isInteger('Required signatures'),
-    minValue(1, 'Required signatures'),
-    maxValue(10, 'Required signatures')
-  ),
-};
-
-const rapidRules: FieldRules<RapidFields> = {
-  disasterId: compose(required('Disaster ID'), identifier('Disaster ID')),
-  disasterType: compose(required('Disaster type'), validateDisasterType),
-  affectedArea: compose(required('Affected area'), maxLength(160, 'Affected area')),
-  totalBudget: compose(required('Total budget'), isPositiveNumber('Total budget')),
-};
-
-type FundStatus = {
-  label: string;
-  icon: string;
-  className: string;
-  badgeClassName: string;
-};
-
-/**
- * Contract timestamps are seconds, while some SDK-created records use
- * milliseconds. Normalise both so status badges and dates are correct.
- */
-const toMillis = (timestamp: number): number =>
-  timestamp > 0 && timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
-
-/** Map a fund to a status that is conveyed by text and icon, not colour alone. */
-const getFundStatus = (fund: EmergencyFund): FundStatus => {
-  const now = Date.now();
-  const expiresAt = toMillis(fund.expiresAt);
-  if (!fund.isActive) {
-    return {
-      label: 'Inactive',
-      icon: '○',
-      className: 'text-gray-700',
-      badgeClassName: 'bg-gray-100 text-gray-800',
-    };
-  }
-  if (now > expiresAt) {
-    return {
-      label: 'Expired',
-      icon: '✕',
-      className: 'text-red-700',
-      badgeClassName: 'bg-red-100 text-red-800',
-    };
-  }
-  if (now > expiresAt - 7 * 24 * 60 * 60 * 1000) {
-    return {
-      label: 'Expiring soon',
-      icon: '!',
-      className: 'text-yellow-700',
-      badgeClassName: 'bg-yellow-100 text-yellow-800',
-    };
-  }
-  return {
-    label: 'Active',
-    icon: '✓',
-    className: 'text-green-700',
-    badgeClassName: 'bg-green-100 text-green-800',
-  };
-};
+  fundName: string;
+  payload: string;
+}
 
 export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
   aidClient,
@@ -133,9 +31,9 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
   const [showRapidForm, setShowRapidForm] = useState(false);
   const [selectedFund, setSelectedFund] = useState<EmergencyFund | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
   const [confirmCleanup, setConfirmCleanup] = useState(false);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const [qrPayload, setQrPayload] = useState<FundQrPayload | null>(null);
+  const [expiryError, setExpiryError] = useState<string | null>(null);
 
   // Form states
   const [fundForm, setFundForm] = useState<FundFields>({
@@ -202,12 +100,17 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
 
   const handleCreateFund = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-    setStatus(null);
 
-    if (!fundValidation.validateAll(fundForm)) {
+    // #200 — validate the expiry before anything is submitted. Previously this
+    // was `new Date(...).getTime()` with no guards, so a malformed entry
+    // produced NaN and still reached the contract.
+    const expiry = parseExpiryInput(fundForm.expiresAt);
+    if (!expiry.ok) {
+      setExpiryError(expiry.reason);
+      notify({ type: 'error', title: 'Cannot create fund', message: expiry.reason });
       return;
     }
+    setExpiryError(null);
 
     try {
       setLoading(true);
@@ -219,11 +122,11 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
         fundForm.totalAmount,
         fundForm.disasterType,
         fundForm.geographicScope,
-        new Date(fundForm.expiresAt).getTime(),
+        expiry.timestamp,
         [adminKey], // Simplified - would use multi-sig in production
         parseInt(fundForm.requiredSignatures)
       );
-      
+
       setShowCreateForm(false);
       setFundForm({
         fundId: '',
@@ -323,8 +226,79 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
     }
   };
 
+  /**
+   * #201 — this button previously called `aidClient.generateFundQRCode(...)`
+   * inside the click handler and discarded the return value, so the button
+   * looked like it did something and produced no visible output at all.
+   *
+   * The returned payload is now held in state and shown in a modal, and can
+   * be copied or downloaded. Failures are surfaced rather than swallowed.
+   */
+  const handleGenerateQrCode = (fund: EmergencyFund) => {
+    try {
+      const payload = aidClient.generateFundQRCode(fund.id, fund);
+
+      if (typeof payload !== 'string' || payload === '') {
+        throw new Error('QR payload was empty');
+      }
+
+      setQrPayload({ fundId: fund.id, fundName: fund.name, payload });
+      notify({
+        type: 'success',
+        title: 'QR code ready',
+        message: `Offline payload generated for "${fund.name}".`,
+      });
+    } catch (err) {
+      const message = friendlyError(err);
+      setError(message);
+      notify({ type: 'error', title: 'Could not generate QR code', message });
+    }
+  };
+
+  const handleCopyQrPayload = async () => {
+    if (!qrPayload) return;
+
+    try {
+      await navigator.clipboard.writeText(qrPayload.payload);
+      notify({ type: 'success', title: 'Copied', message: 'QR payload copied to clipboard.' });
+    } catch (err) {
+      setError(friendlyError(err));
+      notify({
+        type: 'error',
+        title: 'Clipboard unavailable',
+        message: 'Copy the payload manually from the dialog.',
+      });
+    }
+  };
+
+  const handleDownloadQrPayload = () => {
+    if (!qrPayload) return;
+
+    try {
+      // A Blob is used rather than a data: URL so the payload is not
+      // round-tripped through a URL-encoded string.
+      const blob = new Blob([qrPayload.payload], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${qrPayload.fundId}-qr.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+
+      // Release the object URL only after the click has been dispatched.
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(friendlyError(err));
+      notify({ type: 'error', title: 'Download failed', message: friendlyError(err) });
+    }
+  };
+
   const formatAmount = (amount: string) => {
-    return new Intl.NumberFormat().format(parseInt(amount) || 0);
+    // #203 — parseAmount, not parseInt: fund totals can exceed the safe
+    // integer range and must not be rounded into a plausible wrong number.
+    return formatBigAmount(parseAmount(amount), { compact: false });
   };
 
   const formatDate = (timestamp: number) => {
@@ -508,69 +482,31 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
                   id="fund-geographic-scope"
                   label="Geographic scope"
                   required
-                  error={fundError('geographicScope')}
-                >
-                  <input
-                    id="fund-geographic-scope"
-                    name="geographicScope"
-                    type="text"
-                    value={fundForm.geographicScope}
-                    onChange={(e) => setFundForm({...fundForm, geographicScope: e.target.value})}
-                    onBlur={() => fundValidation.validateField('geographicScope', fundForm.geographicScope)}
-                    aria-invalid={fundError('geographicScope') ? true : undefined}
-                    aria-describedby={fundError('geographicScope') ? 'fund-geographic-scope-error' : undefined}
-                    className="w-full px-3 py-2 border rounded"
-                    required
-                  />
-                </FormField>
-                <FormField
-                  id="fund-expires-at"
-                  label="Expires at"
-                  required
-                  error={fundError('expiresAt')}
-                >
-                  <input
-                    id="fund-expires-at"
-                    name="expiresAt"
-                    type="datetime-local"
-                    value={fundForm.expiresAt}
-                    onChange={(e) => setFundForm({...fundForm, expiresAt: e.target.value})}
-                    onBlur={() => fundValidation.validateField('expiresAt', fundForm.expiresAt)}
-                    aria-invalid={fundError('expiresAt') ? true : undefined}
-                    aria-describedby={fundError('expiresAt') ? 'fund-expires-at-error' : undefined}
-                    className="w-full px-3 py-2 border rounded"
-                    required
-                  />
-                </FormField>
-              </div>
-
-              <FormField
-                id="fund-required-signatures"
-                label="Required signatures"
-                required
-                hint="Enter a whole number from 1 to 10."
-                error={fundError('requiredSignatures')}
-              >
-                <input
-                  id="fund-required-signatures"
-                  name="requiredSignatures"
-                  type="number"
-                  inputMode="numeric"
-                  min="1"
-                  max="10"
-                  value={fundForm.requiredSignatures}
-                  onChange={(e) => setFundForm({...fundForm, requiredSignatures: e.target.value})}
-                  onBlur={() => fundValidation.validateField('requiredSignatures', fundForm.requiredSignatures)}
-                  aria-invalid={fundError('requiredSignatures') ? true : undefined}
-                  aria-describedby={
-                    fundError('requiredSignatures')
-                      ? 'fund-required-signatures-hint fund-required-signatures-error'
-                      : 'fund-required-signatures-hint'
-                  }
-                  className="w-full px-3 py-2 border rounded"
-                  required
                 />
-              </FormField>
+                <div>
+                  <input
+                    type="datetime-local"
+                    aria-label="Expiry"
+                    aria-invalid={expiryError !== null}
+                    aria-describedby={expiryError !== null ? 'expires-at-error' : undefined}
+                    value={fundForm.expiresAt}
+                    onChange={(e) => {
+                      setFundForm({...fundForm, expiresAt: e.target.value});
+                      setExpiryError(null);
+                    }}
+                    className={`w-full px-3 py-2 border rounded ${
+                      expiryError !== null ? 'border-red-400' : ''
+                    }`}
+                    required
+                  />
+                  {/* #200 — feedback belongs next to the field that produced it. */}
+                  {expiryError && (
+                    <p id="expires-at-error" role="alert" className="mt-1 text-sm text-red-600">
+                      {expiryError}
+                    </p>
+                  )}
+                </div>
+              </div>
               
               <div className="flex flex-wrap gap-2">
                 <button
@@ -756,7 +692,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
                         <p><strong>Total:</strong> {formatAmount(fund.totalAmount)}</p>
                         <p><strong>Released:</strong> {formatAmount(fund.releasedAmount)}</p>
                         <p><strong>Remaining:</strong> {formatAmount(
-                          (parseInt(fund.totalAmount) - parseInt(fund.releasedAmount)).toString()
+                          (parseAmount(fund.totalAmount) - parseAmount(fund.releasedAmount)).toString()
                         )}</p>
                       </div>
                       
@@ -769,8 +705,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
                           Monitor
                         </button>
                         <button
-                          type="button"
-                          onClick={() => aidClient.generateFundQRCode(fund.id, fund)}
+                          onClick={() => handleGenerateQrCode(fund)}
                           className="bg-green-500 text-white px-3 py-1 text-sm rounded hover:bg-green-600"
                         >
                           QR Code
@@ -784,6 +719,51 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
             </div>
           )}
         </div>
+
+        {/* Fund QR Modal — #201: the generated payload is now actually shown. */}
+        {qrPayload && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 sm:p-4">
+            <div className="bg-white rounded-lg p-4 sm:p-6 max-w-2xl w-full max-h-screen overflow-y-auto">
+              <h2 className="text-2xl font-bold mb-1">Fund QR Payload</h2>
+              <p className="text-sm text-gray-600 mb-4">
+                Offline access payload for <strong>{qrPayload.fundName}</strong> ({qrPayload.fundId}).
+                Share or print this for offline verification.
+              </p>
+
+              <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="qr-payload">
+                Payload
+              </label>
+              <textarea
+                id="qr-payload"
+                readOnly
+                value={qrPayload.payload}
+                rows={10}
+                className="w-full px-3 py-2 border rounded font-mono text-xs"
+              />
+
+              <div className="mt-4 flex flex-wrap justify-end gap-2">
+                <button
+                  onClick={handleCopyQrPayload}
+                  className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600 text-sm"
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={handleDownloadQrPayload}
+                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm"
+                >
+                  Download
+                </button>
+                <button
+                  onClick={() => setQrPayload(null)}
+                  className="bg-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-400 text-sm"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Fund Details Modal */}
         {selectedFund && (
