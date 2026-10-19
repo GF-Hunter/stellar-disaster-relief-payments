@@ -1,4 +1,5 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
+use crate::aid_registry::require_not_paused;
 
 #[contract]
 pub struct CashTransfer;
@@ -55,7 +56,11 @@ impl CashTransfer {
         purpose: String,
     ) {
         creator.require_auth();
-        
+
+        // #239 — gated by the shared incident pause so a paused platform stops
+        // taking on new transfer obligations, not just new disbursements.
+        require_not_paused(&env);
+
         // Check for duplicate transfer
         let transfers_key = Symbol::new(&env, "transfers");
         let transfers: Map<String, ConditionalTransfer> = env.storage().instance()
@@ -102,7 +107,10 @@ impl CashTransfer {
         location: String,
     ) -> bool {
         beneficiary.require_auth();
-        
+
+        // #239 — spending is the primary path a pause must stop.
+        require_not_paused(&env);
+
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
             .get(&transfers_key)
@@ -300,7 +308,11 @@ impl CashTransfer {
         new_expiry: u64,
     ) {
         creator.require_auth();
-        
+
+        // #239 — extending an expiry keeps funds spendable, so it is gated
+        // with the rest of the value-moving paths.
+        require_not_paused(&env);
+
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
             .get(&transfers_key)

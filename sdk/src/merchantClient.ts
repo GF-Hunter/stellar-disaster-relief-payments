@@ -16,35 +16,49 @@ import {
   Location,
   MerchantOnboardingRequest,
   NetworkConfig,
-  MerchantPaginationOptions,
-  PaginatedMerchants,
 } from './types';
 import {
   MerchantNotFoundError,
   NetworkError,
   ValidationError,
 } from './errors';
-import { withRetry } from './retry';
-import { ReadCache } from './readCache';
-import { OfflineEnvelope, OfflineSigner } from './offlineSigner';
-
-/** Default page size for merchant listing endpoints. */
-export const DEFAULT_MERCHANT_PAGE_SIZE = 20;
-
-/** Maximum page size accepted by the merchant contract. */
-export const MAX_MERCHANT_PAGE_SIZE = 100;
+import {
+  DEFAULT_OFFCHAIN_POLICY,
+  OffchainPolicy,
+  OffchainRequestBlockedError,
+  normaliseHost,
+  safeFetchText,
+} from './offchainFetch';
 
 export class MerchantClient {
   private server: any;
   private contract: any;
   private config: NetworkConfig;
   readonly cache: ReadCache;
+  /**
+   * #238 — policy governing off-chain lookups. Empty by default, which means
+   * *every* off-chain request is refused until a host is allowlisted. Failing
+   * closed is deliberate: a silent default-allow would keep the SSRF surface
+   * open for anyone who forgot to configure it.
+   */
+  private offchainPolicy: OffchainPolicy;
 
-  constructor(config: NetworkConfig) {
+  constructor(config: NetworkConfig, offchainPolicy: OffchainPolicy = {}) {
     this.config = config;
     this.server = new Server(config.rpcUrl);
     this.contract = new Contract(config.contractIds.merchantNetwork);
     this.cache = new ReadCache(config);
+    this.offchainPolicy = offchainPolicy;
+  }
+
+  /**
+   * Replace the off-chain fetch policy.
+   *
+   * @example
+   * client.setOffchainPolicy({ allowedHostSuffixes: ['.relief.example'] });
+   */
+  setOffchainPolicy(policy: OffchainPolicy): void {
+    this.offchainPolicy = policy;
   }
 
   /**
@@ -441,15 +455,40 @@ export class MerchantClient {
   }
 
   /**
-   * Discover merchants using Stellar TOML
+   * Discover merchants using Stellar TOML.
+   *
+   * #238 — this previously did `fetch('https://' + domain + '/.well-known/stellar.toml')`
+   * with a caller-supplied, entirely unvalidated `domain`. Because the value
+   * was interpolated into a URL, a caller could supply `user@evil.com` (which
+   * makes the request go to `evil.com`), `localhost:8000` or
+   * `169.254.169.254` (which reach internal services and cloud metadata), and
+   * the response was then parsed and handed back as merchant data.
+   *
+   * Now the host is normalised and checked against the allowlist, the request
+   * is HTTPS-only with no credential headers, redirects are followed manually
+   * with the allowlist re-applied at every hop, and the response is
+   * size-capped. A blocked request returns an empty list and logs the reason
+   * rather than silently returning nothing.
+   *
+   * @throws {ValidationError} if `domain` is not a bare hostname.
    */
   async discoverMerchantsFromStellarToml(domain: string): Promise<Merchant[]> {
-    try {
-      // Fetch Stellar TOML file
-      const tomlUrl = `https://${domain}/.well-known/stellar.toml`;
-      const response = await fetch(tomlUrl);
-      const tomlData = await response.text();
+    const host = normaliseHost(domain);
+    const tomlUrl = `https://${host}/.well-known/stellar.toml`;
 
+    let tomlData: string;
+    try {
+      const result = await safeFetchText(tomlUrl, this.offchainPolicy);
+      tomlData = result.body;
+    } catch (error) {
+      if (error instanceof OffchainRequestBlockedError) {
+        console.error(`Refused Stellar TOML discovery for "${host}": ${error.message}`);
+        return [];
+      }
+      throw error;
+    }
+
+    try {
       // Parse TOML and extract merchant information
       // This is a simplified implementation
       const merchants: Merchant[] = [];
@@ -496,7 +535,7 @@ export class MerchantClient {
 
       return merchants;
     } catch (error) {
-      console.error('Failed to discover merchants from TOML:', error);
+      console.error('Failed to parse merchants from TOML:', error);
       return [];
     }
   }
