@@ -1,5 +1,5 @@
 import {
-  Server,
+  SorobanRpc,
   TransactionBuilder,
   Networks,
   Keypair,
@@ -8,6 +8,9 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+const { Server } = SorobanRpc;
+type Server = SorobanRpc.Server;
+
 import { MultiSigManager } from './multiSig';
 import {
   BeneficiaryProfile,
@@ -18,6 +21,10 @@ import {
   PaginationOptions,
   NetworkConfig,
 } from './types';
+import { ReadCache } from './readCache';
+import { OfflineSigner, OfflineEnvelope } from './offlineSigner';
+import { withRetry } from './retry';
+import { validateAddress } from './validation';
 import { createHash } from 'crypto-js';
 import {
   BeneficiaryNotFoundError,
@@ -30,8 +37,8 @@ import { validateAddress } from './validation';
 import { OfflineEnvelope, OfflineSigner } from './offlineSigner';
 
 export class BeneficiaryClient {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: NetworkConfig;
   readonly cache: ReadCache;
 

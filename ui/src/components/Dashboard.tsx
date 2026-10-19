@@ -10,6 +10,10 @@ import {
   ConditionalTransfer,
   NetworkConfig,
 } from '../../sdk/src/types';
+import { AidClient } from '../../sdk/src/aidClient';
+import { BeneficiaryClient } from '../../sdk/src/beneficiaryClient';
+import { MerchantClient } from '../../sdk/src/merchantClient';
+import { TransferClient } from '../../sdk/src/transferClient';
 
 /**
  * Contract timestamps are seconds, while some SDK-created records use

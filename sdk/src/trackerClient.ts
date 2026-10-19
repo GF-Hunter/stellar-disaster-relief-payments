@@ -1,5 +1,5 @@
 import {
-  Server,
+  SorobanRpc,
   TransactionBuilder,
   Networks,
   Keypair,
@@ -8,6 +8,9 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+const { Server } = SorobanRpc;
+type Server = SorobanRpc.Server;
+
 import {
   SupplyShipment,
   Checkpoint,
@@ -20,10 +23,16 @@ import {
   NetworkError,
   ValidationError,
 } from './errors';
+import { ReadCache } from './readCache';
+import { OfflineSigner, OfflineEnvelope } from './offlineSigner';
+import { MultiSigManager } from './multiSig';
+import { withRetry } from './retry';
+import { validateAddress } from './validation';
+import { NetworkConfig } from './types';
 
 export class TrackerClient {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: NetworkConfig;
   readonly cache: ReadCache;
 
@@ -615,6 +624,38 @@ export class TrackerClient {
       .build();
     return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
   }
+  /**
+   * Build an unsigned transaction for creating a supply shipment.
+   */
+  async buildOfflineCreateShipment(
+    sourcePublicKey: string,
+    request: any
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
+    const shipmentId = `shipment_${request.donorId}_${Date.now()}`;
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'create_shipment',
+          ...[
+            new Address(sourcePublicKey).toScVal(),
+            nativeToScVal(shipmentId), nativeToScVal(request.donorId),
+            nativeToScVal(request.supplyType), nativeToScVal(request.quantity),
+            nativeToScVal(request.unit), nativeToScVal(request.origin),
+            nativeToScVal(request.destination), nativeToScVal(request.estimatedArrival),
+            nativeToScVal(request.temperatureRequirements),
+            nativeToScVal(request.specialHandling),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
+
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':

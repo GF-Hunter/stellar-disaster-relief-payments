@@ -1,5 +1,5 @@
 import {
-  Server,
+  SorobanRpc,
   TransactionBuilder,
   Networks,
   Keypair,
@@ -8,6 +8,9 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+const { Server } = SorobanRpc;
+type Server = SorobanRpc.Server;
+
 import {
   Merchant,
   Transaction,
@@ -19,10 +22,15 @@ import {
   NetworkError,
   ValidationError,
 } from './errors';
+import { ReadCache } from './readCache';
+import { OfflineSigner, OfflineEnvelope } from './offlineSigner';
+import { MultiSigManager } from './multiSig';
+import { withRetry } from './retry';
+import { NetworkConfig } from './types';
 
 export class MerchantClient {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: NetworkConfig;
   readonly cache: ReadCache;
 
@@ -535,14 +543,6 @@ export class MerchantClient {
     beneficiaryId: string,
     amount: string,
     token: string,
-    purpose: string,
-    authorizedSigners: string[],
-    threshold: number
-  ): Promise<MultiSigManager> {
-    const merchantKeypair = Keypair.fromSecret(merchantKey);
-    const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
-    const merchantAccount = await this.server.getAccount(merchantKeypair.publicKey());
-    const tx = new TransactionBuilder(merchantAccount, {
     purpose: string
   ): Promise<OfflineEnvelope> {
     const sourceAccount = await this.server.getAccount(merchantPublicKey);
@@ -565,6 +565,42 @@ export class MerchantClient {
       .build();
     return OfflineSigner.serialize(tx);
   }
+
+  /**
+   * Build a multi-sig payment transaction for offline collection of signatures.
+   */
+  async buildMultiSigPayment(
+    merchantPublicKey: string,
+    beneficiaryPublicKey: string,
+    merchantId: string,
+    beneficiaryId: string,
+    amount: string,
+    token: string,
+    purpose: string,
+    authorizedSigners: string[],
+    threshold: number
+  ): Promise<MultiSigManager> {
+    const sourceAccount = await this.server.getAccount(merchantPublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '200',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'process_payment',
+          ...[
+            new Address(merchantPublicKey).toScVal(),
+            new Address(beneficiaryPublicKey).toScVal(),
+            nativeToScVal(merchantId), nativeToScVal(beneficiaryId),
+            nativeToScVal(amount), nativeToScVal(token), nativeToScVal(purpose),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+  }
+
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':
