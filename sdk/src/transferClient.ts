@@ -8,9 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
-const { Server } = SorobanRpc;
-type Server = SorobanRpc.Server;
-
+import { ReadCache } from './readCache';
 import {
   ConditionalTransfer,
   SpendingRule,

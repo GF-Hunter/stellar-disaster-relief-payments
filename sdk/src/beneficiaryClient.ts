@@ -7,6 +7,8 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { MultiSigManager } from './multiSig';
+import { ReadCache } from './readCache';
 import {
   BeneficiaryProfile,
   VerificationFactor,
