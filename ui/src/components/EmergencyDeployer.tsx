@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { AidClient, EmergencyFund, NetworkConfig } from '../../sdk/src/types';
+import { AidClient } from '../../sdk/src/aidClient';
+import { EmergencyFund, NetworkConfig } from '../../sdk/src/types';
+import { StellarNetworkConfig } from '../../sdk/src/networkConfig';
+import { ConfirmDialog } from './ConfirmDialog';
+import { useNotifications } from './NotificationSystem';
 
 interface EmergencyDeployerProps {
   aidClient: AidClient;

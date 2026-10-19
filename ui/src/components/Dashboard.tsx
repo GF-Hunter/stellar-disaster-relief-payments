@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import {
-  AidClient,
-  BeneficiaryClient,
-  MerchantClient,
-  TransferClient,
   EmergencyFund,
   BeneficiaryProfile,
   Merchant,
   ConditionalTransfer,
   NetworkConfig,
 } from '../../sdk/src/types';
+import { AidClient } from '../../sdk/src/aidClient';
+import { BeneficiaryClient } from '../../sdk/src/beneficiaryClient';
+import { MerchantClient } from '../../sdk/src/merchantClient';
+import { TransferClient } from '../../sdk/src/transferClient';
 
 interface DashboardProps {
   aidClient: AidClient;

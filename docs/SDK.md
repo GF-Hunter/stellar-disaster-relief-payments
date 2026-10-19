@@ -412,7 +412,7 @@ Generate and validate offline QR codes for fund access.
 
 ```typescript
 generateFundQRCode(fundId: string, fund: EmergencyFund): string
-validateFundQRCode(qrCodeData: string): boolean
+validateFundQRCode(qrCodeData: string): Promise<boolean>
 ```
 
 ---

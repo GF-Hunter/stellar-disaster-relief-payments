@@ -54,6 +54,8 @@ export interface Location {
   city: string;
   country: string;
   postalCode: string;
+  facilityName?: string;
+  contactPerson?: string;
 }
 
 export interface Transaction {
@@ -281,6 +283,57 @@ export interface NetworkConfig {
   logging?: import('./logger').LoggingConfig;
 }
 
+/** Contract slots that can be targeted by batch/upgrade clients. */
+export type ContractTarget = keyof NetworkConfig['contractIds'];
+
+/** Maximum number of contract calls that can be packed into one Stellar transaction. */
+export const BATCH_MAX_SIZE = 100;
+
+/** A single contract invocation within a batch. */
+export interface BatchContractCall {
+  contractTarget: ContractTarget;
+  method: string;
+  args: any[];
+}
+
+/** Request to execute multiple contract calls atomically. */
+export interface BatchExecuteRequest {
+  calls: BatchContractCall[];
+  signerKey: string;
+}
+
+/** Per-call result returned by BatchClient. */
+export interface BatchCallResult {
+  index: number;
+  success: boolean;
+  returnValue?: unknown;
+  error?: string;
+}
+
+/** Result of a batch execution. */
+export interface BatchExecuteResult {
+  transactionHash: string;
+  status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
+  results: BatchCallResult[];
+  ledger?: number;
+}
+
+/** Request to upgrade an already-deployed contract. */
+export interface ContractUpgradeRequest {
+  target: ContractTarget;
+  /** 32-byte WASM hash encoded as 64 hex chars or base64. */
+  newWasmHash: string;
+  adminKey: string;
+}
+
+/** Result of a contract upgrade. */
+export interface ContractUpgradeResult {
+  contractId: string;
+  transactionHash: string;
+  status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
+  ledger?: number;
+}
+
 export interface DeploymentOptions {
   network: "testnet" | "mainnet";
   adminKey: string;
@@ -431,4 +484,30 @@ export interface PaginationOptions {
    * Must be between 1 and 100 (inclusive). Defaults to 20.
    */
   limit?: number;
+}
+
+/** Options for searching and filtering beneficiaries. */
+export interface BeneficiarySearchOptions extends PaginationOptions {
+  /** Free-text search over beneficiary id/name. */
+  search?: string;
+  /** Exact location filter. */
+  locationFilter?: string;
+  /** When true (default), only active beneficiaries are returned. */
+  activeOnly?: boolean;
+  /** Minimum trust score (0-100). Defaults to 0. */
+  minTrustScore?: number;
+}
+
+/** Options for searching and filtering emergency funds. */
+export interface FundSearchOptions {
+  /** Free-text search over fund id/name. */
+  search?: string;
+  /** Exact disaster type filter. */
+  disasterType?: string;
+  /** When true, only active funds are returned. Defaults to false. */
+  activeOnly?: boolean;
+  /** Only include funds created at or after this timestamp. */
+  createdAfter?: number;
+  /** Only include funds created at or before this timestamp. */
+  createdBefore?: number;
 }

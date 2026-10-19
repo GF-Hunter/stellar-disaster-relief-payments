@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { BeneficiaryClient, BeneficiaryProfile, VerificationFactor, NetworkConfig } from '../../sdk/src/types';
+import { BeneficiaryClient } from '../../sdk/src/beneficiaryClient';
+import { BeneficiaryProfile, VerificationFactor, NetworkConfig } from '../../sdk/src/types';
+import { StellarNetworkConfig } from '../../sdk/src/networkConfig';
+import { useNotifications } from './NotificationSystem';
 
 interface BeneficiaryRegistrationProps {
   beneficiaryClient: BeneficiaryClient;
