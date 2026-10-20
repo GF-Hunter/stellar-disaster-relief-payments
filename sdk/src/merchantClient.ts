@@ -29,6 +29,17 @@ import {
   normaliseHost,
   safeFetchText,
 } from './offchainFetch';
+import { ReadCache } from './readCache';
+import { OfflineSigner, OfflineEnvelope } from './offlineSigner';
+import { MultiSigManager } from './multiSig';
+import { withRetry } from './retry';
+
+// Payment methods matching contract enum
+export const PAYMENT_QR = 0;
+export const PAYMENT_USSD = 1;
+export const PAYMENT_NFC = 2;
+export const PAYMENT_OFFLINE = 3;
+export const PAYMENT_ONLINE = 4;
 
 export class MerchantClient {
   private server: any;
@@ -152,6 +163,15 @@ export class MerchantClient {
 
   /**
    * Process payment from beneficiary to merchant
+   *
+   * @param merchantKey - Merchant secret key
+   * @param beneficiaryKey - Beneficiary secret key
+   * @param merchantId - Merchant identifier
+   * @param beneficiaryId - Beneficiary identifier
+   * @param amount - Payment amount
+   * @param token - Token symbol/address
+   * @param purpose - Purpose of payment
+   * @param paymentMethod - Payment method discriminator (defaults to PAYMENT_ONLINE = 4)
    */
   async processPayment(
     merchantKey: string,
@@ -160,7 +180,8 @@ export class MerchantClient {
     beneficiaryId: string,
     amount: string,
     token: string,
-    purpose: string
+    purpose: string,
+    paymentMethod: number = PAYMENT_ONLINE
   ): Promise<string> {
     const merchantKeypair = Keypair.fromSecret(merchantKey);
     const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
@@ -181,7 +202,8 @@ export class MerchantClient {
             nativeToScVal(beneficiaryId),
             nativeToScVal(amount),
             nativeToScVal(token),
-            nativeToScVal(purpose)
+            nativeToScVal(purpose),
+            nativeToScVal(paymentMethod),
           ]
         )
       )
@@ -689,6 +711,15 @@ export class MerchantClient {
 
   /**
    * Build an unsigned transaction for processing a payment.
+   *
+   * @param merchantPublicKey - Merchant account public key
+   * @param beneficiaryPublicKey - Beneficiary account public key
+   * @param merchantId - Merchant identifier
+   * @param beneficiaryId - Beneficiary identifier
+   * @param amount - Payment amount
+   * @param token - Token symbol/address
+   * @param purpose - Purpose of payment
+   * @param paymentMethod - Payment method discriminator (defaults to PAYMENT_ONLINE = 4)
    */
   async buildOfflinePayment(
     merchantPublicKey: string,
@@ -697,7 +728,8 @@ export class MerchantClient {
     beneficiaryId: string,
     amount: string,
     token: string,
-    purpose: string
+    purpose: string,
+    paymentMethod: number = PAYMENT_ONLINE
   ): Promise<OfflineEnvelope> {
     const sourceAccount = await this.server.getAccount(merchantPublicKey);
     const tx = new TransactionBuilder(sourceAccount, {
@@ -712,6 +744,55 @@ export class MerchantClient {
             new Address(beneficiaryPublicKey).toScVal(),
             nativeToScVal(merchantId), nativeToScVal(beneficiaryId),
             nativeToScVal(amount), nativeToScVal(token), nativeToScVal(purpose),
+            nativeToScVal(paymentMethod),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
+
+  /**
+   * Build a multi-sig payment transaction for offline collection of signatures.
+   *
+   * @param merchantPublicKey - Merchant account public key
+   * @param beneficiaryPublicKey - Beneficiary account public key
+   * @param merchantId - Merchant identifier
+   * @param beneficiaryId - Beneficiary identifier
+   * @param amount - Payment amount
+   * @param token - Token symbol/address
+   * @param purpose - Purpose of payment
+   * @param authorizedSigners - Public keys of signers authorized to sign
+   * @param threshold - Number of required signatures
+   * @param paymentMethod - Payment method discriminator (defaults to PAYMENT_ONLINE = 4)
+   */
+  async buildMultiSigPayment(
+    merchantPublicKey: string,
+    beneficiaryPublicKey: string,
+    merchantId: string,
+    beneficiaryId: string,
+    amount: string,
+    token: string,
+    purpose: string,
+    authorizedSigners: string[],
+    threshold: number,
+    paymentMethod: number = PAYMENT_ONLINE
+  ): Promise<MultiSigManager> {
+    const sourceAccount = await this.server.getAccount(merchantPublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '200',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'process_payment',
+          ...[
+            new Address(merchantPublicKey).toScVal(),
+            new Address(beneficiaryPublicKey).toScVal(),
+            nativeToScVal(merchantId), nativeToScVal(beneficiaryId),
+            nativeToScVal(amount), nativeToScVal(token), nativeToScVal(purpose),
+            nativeToScVal(paymentMethod),
           ]
         )
       )

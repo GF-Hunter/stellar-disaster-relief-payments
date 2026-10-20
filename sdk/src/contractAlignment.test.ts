@@ -106,11 +106,6 @@ const KNOWN_DIVERGENCES: Record<string, { contract: number; sdk: number; reason:
     sdk: 11,
     reason: 'SDK still sends the legacy onboarding fields (toml/daily/monthly/documents)',
   },
-  process_payment: {
-    contract: 8,
-    sdk: 7,
-    reason: 'SDK does not yet expose the contract payment_method discriminator',
-  },
 };
 
 function contractId(seed: number): string {
@@ -300,6 +295,19 @@ describe('SDK <-> contract shape alignment', () => {
       )
     );
     expectShape('processPayment', method, args.length);
+    expect(args[7]).toBe(4); // Default PAYMENT_ONLINE
+  });
+
+  test('MerchantClient.processPayment with explicit payment_method', async () => {
+    const client = new MerchantClient(CONFIG) as any;
+    const { method, args } = await captureCall(client, () =>
+      client.processPayment(
+        signer.secret(), approver.secret(), 'mer_1', 'ben_1',
+        '25', 'XLM', 'food', 0 // PAYMENT_QR
+      )
+    );
+    expectShape('processPayment', method, args.length);
+    expect(args[7]).toBe(0);
   });
 
   test('MerchantClient.buildOfflineRegisterMerchant -> register_merchant', async () => {

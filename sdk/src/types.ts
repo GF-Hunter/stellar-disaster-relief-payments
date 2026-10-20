@@ -416,6 +416,7 @@ export interface PaymentRequest {
   token: string;
   purpose: string;
   location?: string;
+  category?: string;
 }
 
 export interface VerificationRequest {

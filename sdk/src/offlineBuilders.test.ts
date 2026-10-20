@@ -165,6 +165,20 @@ describe('offline envelope builders', () => {
     expectUnsignedEnvelope(envelope);
   });
 
+  test('TransferClient.buildOfflineCreateTransfer accepts typed SpendingRule[]', async () => {
+    const client = withServer(new TransferClient(TESTNET_CONFIG), source.publicKey());
+    const rules = [
+      client.createCategoryLimitRule('food', '50'),
+      client.createTimeWindowRule(1000, 2000),
+    ];
+    const envelope = await client.buildOfflineCreateTransfer(
+      source.publicKey(), 'tr_typed', 'ben_1', '100', 'XLM',
+      Date.now() + 60_000, rules, 'emergency food'
+    );
+
+    expectUnsignedEnvelope(envelope);
+  });
+
   test('TrackerClient.buildOfflineCreateShipment produces a signable envelope', async () => {
     const client = withServer(new TrackerClient(TESTNET_CONFIG), source.publicKey());
     const envelope = await client.buildOfflineCreateShipment(source.publicKey(), {
